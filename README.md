@@ -63,42 +63,20 @@ The backend is the source of truth.
 
 ---
 
-# MVP
+## MVP Scope
 
-The initial MVP focuses on four communication types:
+The MVP focuses on converting Discord communication into structured, human-reviewed tasks and coordination actions.
 
-1. **Specific Assignment**
-2. **Open Assignment**
-3. **Incident**
-4. **Emergency**
+The initial task types are:
 
-The MVP should demonstrate the following complete workflow:
+1. **Specific Assignment** — a task directed to a known person or group.
+2. **Open Assignment** — a task that can be claimed or accepted by an appropriate person.
 
-```text
-Discord Message
-      ↓
-Identify Sender
-      ↓
-Extract Context
-      ↓
-Normalize Event
-      ↓
-Determine Relevance
-      ↓
-LLM Inference
-      ↓
-Structured Proposal
-      ↓
-Human Confirmation
-      ↓
-Backend State Change
-      ↓
-Dashboard
-```
+The MVP also includes message ingestion and preservation, relevance classification, proposal drafting, human review, task lifecycle management, cross-vertical approval, notifications, role-based access control, and dashboards.
 
-The goal is not to build a complete enterprise collaboration platform.
+**Incident and emergency management are post-MVP features.** They remain part of the longer-term vision but are not part of the initial MVP implementation.
 
-The goal is to prove that **unstructured communication can reliably become structured coordination.**
+The goal is to demonstrate that unstructured communication can reliably become structured coordination, with authorized humans confirming actions and the backend maintaining authoritative state.
 
 ---
 
@@ -407,8 +385,8 @@ The ASEC application is intended to provide:
 * notifications
 * confirmation
 * task management
-* incident management
-* emergency management
+* incident management [future scope]
+* emergency management [future scope]
 * user-specific views
 * vertical-level views
 
@@ -437,29 +415,26 @@ The Discord bot may also provide lightweight task/status interactions.
 
 ---
 
-# Development Strategy
+## Development Strategy
 
-ASEC is being developed incrementally.
+ASEC is being developed incrementally, with an emphasis on correctness, traceability, and a complete working workflow before adding complexity.
 
-The project is intentionally avoiding premature complexity.
+The implementation sequence is:
 
-Current development order:
-
-```text
-1. Discord capability testing
-2. Piggyback ingestion
-3. Event normalization
-4. Identity mapping
-5. Backend + database
-6. LLM inference
-7. Confirmation workflow
-8. Task / incident / emergency lifecycle
-9. Dashboard
-10. Evaluation
-11. Deployment
-```
+1. Repository and development environment setup.
+2. Database schema, migrations, and integrity constraints.
+3. Discord message ingestion, preservation, and idempotency.
+4. Message bucketing and relevance processing.
+5. Durable jobs, retries, recovery, and privacy masking.
+6. Proposal generation and output validation.
+7. Human review, task lifecycle, authorization, and history.
+8. Cross-vertical approval and notifications.
+9. API and application dashboard.
+10. AI evaluation, Discord hardening, and reliability testing.
 
 Voice input is planned as a separate input path after the message-based MVP is stable.
+
+Formal requirements and MVP acceptance criteria are maintained in [`docs/SRS.md`](docs/SRS.md).
 
 ---
 
