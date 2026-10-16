@@ -608,3 +608,29 @@ Everything else builds on this boundary.
 **Current focus:** Discord substrate → Piggyback ingestion → event normalization
 
 **MVP target:** End-to-end AI-assisted coordination workflow with human confirmation
+
+---
+
+# Local Development Setup (Phase 0)
+
+Requires Python 3.12.
+
+```text
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS/Linux
+pip install -e ".[dev]"
+```
+
+Run the Phase 0 checks:
+
+```text
+ruff check .
+mypy
+pytest
+python -m backend --version
+```
+
+Configuration is read from the process environment. Copy `.env.example` to `.env`
+and fill in values locally; `.env` is git-ignored and must never be committed or
+logged. Direct development dependencies are pinned exactly in `pyproject.toml`.
