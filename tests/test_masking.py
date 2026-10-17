@@ -28,6 +28,13 @@ from backend.masking import (
         "reach (98765) 43210",
         "reach (98765)43210",
         "reach +91 (98765) 43210",
+        "reach 98765  43210",
+        "reach 98765 - 43210",
+        "reach 98765- 43210",
+        "reach 98765\t43210",
+        "reach 98765\u00a043210",
+        "reach (98765)  43210",
+        "reach +91  98765 43210",
     ],
 )
 def test_masks_indian_phone_numbers(text: str) -> None:
@@ -134,6 +141,37 @@ def test_masks_parenthesized_phone_with_other_pii() -> None:
     ],
 )
 def test_phone_number_false_positives_are_not_masked(text: str) -> None:
+    assert mask_pii(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "reach 98765  43210",
+        "reach 98765 - 43210",
+        "reach 98765- 43210",
+        "reach 98765\t43210",
+        "reach 98765\u00a043210",
+        "reach (98765)  43210",
+        "reach +91  98765 43210",
+    ],
+)
+def test_masks_phones_with_unusual_separators(text: str) -> None:
+    assert mask_pii(text) == f"reach {PHONE_PLACEHOLDER}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "98765  4321",
+        "98765  432109",
+        "9876  543210",
+        "198765  43210",
+        "98765  4321098765",
+        "12345  67890",
+    ],
+)
+def test_phone_separator_false_positives_are_not_masked(text: str) -> None:
     assert mask_pii(text) == text
 
 

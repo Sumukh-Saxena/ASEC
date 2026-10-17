@@ -22,11 +22,14 @@ ROLL_NO_PLACEHOLDER = "[ROLL_NO]"
 _EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
 # Common Indian mobile formats: optional +91 / 91 / 0 prefix, optional parentheses
-# around the first five digits, and optional space or hyphen grouping. The digit
-# lookarounds keep it out of longer digit runs such as Discord snowflakes and
-# timestamps.
+# around the first five digits, and grouping separators between the two five-digit
+# halves made of spaces, tabs or non-breaking spaces optionally around a single
+# hyphen (for example "98765 43210", "98765 - 43210", "98765- 43210").
+# The digit lookarounds keep it out of longer digit runs such as Discord snowflakes
+# and timestamps.
 _PHONE_PATTERN = re.compile(
-    r"(?<![0-9])(?:\+?91[ \-]?|0)?\(?[6-9][0-9]{4}\)?[ \-]?[0-9]{5}(?![0-9])"
+    r"(?<![0-9])(?:\+?91[ \t\u00a0-]*|0)?"
+    r"\(?[6-9][0-9]{4}\)?[ \t\u00a0]*(?:-[ \t\u00a0]*)?[0-9]{5}(?![0-9])"
 )
 
 # Institute roll number: BTech/MTech/PhD marker, two admission-year digits, a
