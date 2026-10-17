@@ -550,7 +550,7 @@ Proposal: the relevant message(s) from eligible senders plus bucket context in, 
 
 Mentions are passed as opaque handles, and the backend maps them back to people.
 
-Phone numbers, email addresses and government-ID-like numbers are masked before every call (NFR-SEC-04).
+Phone numbers, email addresses and institute roll numbers are masked before every call (NFR-SEC-04).
 
 Outputs are schema-checked before use. A malformed or incomplete output is an execution failure, never a valid empty result.
 
@@ -627,7 +627,7 @@ Figure 10 shows one AI call, from masking to retry or permanent failure.
  (b) the review screen shows the reviewer the other messages in the proposal’s bucket, and 
 (c) an approval request (FR-XV-03) shows the approver the task description and the requester’s note, not the source chat.
 
-**NFR-SEC-04** Messages contain personal data such as names, phone numbers and ID details. Before any AI call, phone numbers, email addresses and government-ID-like numbers shall be masked. The originals stay in the backend only.
+**NFR-SEC-04** Messages contain personal data such as names, phone numbers and ID details. Before any AI call, phone numbers, email addresses and institute roll numbers shall be masked. The originals stay in the backend only.
 
 **NFR-SEC-05** The AI models are self-hosted, on Google Colab or a local machine for the small MVP run. Colab is Google-operated infrastructure, so text sent there is masked (NFR-SEC-04) exactly as for any hosted service.
 
