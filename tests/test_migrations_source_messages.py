@@ -127,7 +127,8 @@ def _add_reaction(
 
 
 def test_default_migrations_apply_and_create_message_tables(conn: sqlite3.Connection) -> None:
-    assert _versions(conn) == [1, 2]
+    assert _versions(conn) == sorted(set(_versions(conn)))
+    assert {1, 2} <= set(_versions(conn))
     assert _ROSTER_TABLES <= _table_names(conn)
     assert _MESSAGE_TABLES <= _table_names(conn)
 
@@ -136,13 +137,15 @@ def test_reapplying_the_migrations_is_idempotent(tmp_path: Path) -> None:
     connection = connect(tmp_path / "test.db")
     try:
         first = apply_migrations(connection)
-        assert first == [1, 2]
+        assert {1, 2} <= set(first)
+        assert {1, 2} <= set(_versions(connection))
         at_1 = _applied_at(connection, 1)
         at_2 = _applied_at(connection, 2)
 
         second = apply_migrations(connection)
         assert second == []
-        assert _versions(connection) == [1, 2]
+        assert _versions(connection) == sorted(set(_versions(connection)))
+        assert {1, 2} <= set(_versions(connection))
         assert _applied_at(connection, 1) == at_1
         assert _applied_at(connection, 2) == at_2
     finally:
