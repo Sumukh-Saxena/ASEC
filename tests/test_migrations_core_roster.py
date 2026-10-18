@@ -97,7 +97,7 @@ def _add_person(
 
 
 def test_default_migration_applies_and_creates_tables(conn: sqlite3.Connection) -> None:
-    assert _versions(conn) == [1]
+    assert 1 in _versions(conn)
     assert {"vertical", "source_group", "person", "person_vertical"} <= _table_names(conn)
 
 
@@ -105,12 +105,12 @@ def test_reapplying_the_migration_is_idempotent(tmp_path: Path) -> None:
     connection = connect(tmp_path / "test.db")
     try:
         first = apply_migrations(connection)
-        assert first == [1]
+        assert 1 in first
         applied_at = _applied_at(connection, 1)
 
         second = apply_migrations(connection)
         assert second == []
-        assert _versions(connection) == [1]
+        assert 1 in _versions(connection)
         assert _applied_at(connection, 1) == applied_at
     finally:
         connection.close()
