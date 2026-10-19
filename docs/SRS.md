@@ -219,9 +219,9 @@ Buckets let the AI read a message together with its neighbours. All parameters a
 
 **FR-BKT-03** Buckets shall be formed on event timestamps. Messages shall be ordered by (event timestamp, source message ID).
 
-**FR-BKT-04**
+**FR-BKT-04** A message with event time t joins the current bucket (start s, last member time ℓ) if and only if t − s < M and (t − s < W or t − ℓ < G). Otherwise it starts a new bucket. A message exactly M after the start never joins. A gap of exactly G outside the base window never joins.
 
-**FR-BKT-05**
+**FR-BKT-05** A bucket’s computed end is e = min(s + M, max(s + W, ℓ + G)). The bucket is closed when e + C has passed.
 
 **FR-BKT-06** For messages arriving within the close grace of each other, bucket composition shall be the same whatever the arrival order.
 
@@ -345,7 +345,7 @@ Figure 6 shows the review states of FR-REV-01.
 
 **FR-TSK-05** Agreement is set only by an explicit in-app action by the assignee, or by an authorized user on the assignee’s behalf with that fact recorded. It shall never be inferred from messages, reactions or silence. A denial notifies the creator and frees the place; the creator may reassign.
 
-**FR-TSK-06**
+**FR-TSK-06** Only the assignee (or Admin) changes their work status: NOT_STARTED → IN_PROGRESS → COMPLETED. COMPLETED is final. The system has no verification step; the creator verifies outside the system.
 
 **FR-TSK-07** The creator shall see each volunteer’s status on each task, plus a roll-up (for example “3 of 5 completed”).
 
@@ -359,7 +359,7 @@ Figure 6 shows the review states of FR-REV-01.
 
 **FR-TSK-12** Concurrent task edits shall not silently overwrite each other. An edit made on a stale version shall be rejected with the current values shown, and both attempts shall appear in the history.
 
-**FR-TSK-13**
+**FR-TSK-13** The system shall enforce the work-status transitions in FR-TSK-06 and the agreement transitions AWAITING → ACCEPTED or DENIED.
 
 **FR-TSK-14** An AI component shall never create, assign, reassign, change the status of, complete, correct or merge a task.
 

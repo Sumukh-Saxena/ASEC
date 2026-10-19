@@ -15,42 +15,63 @@ implemented as versioned SQLite migrations plus their storage-level tests.
 Phase 2 **delivers**: migration infrastructure, roster/organization tables, source
 message/reaction storage, bucket storage, processing-attempt records, relevance-decision
 records, proposals/revisions, review-state records, tasks/assignees/state
-dimensions/history, cross-vertical approvals, notification records, announcement records.
+dimensions/history, cross-vertical approvals, notification records, announcement records,
+and the NFR-PERF-02 latency measurement records (Slice 2.11).
 
-Phase 2 **does not deliver**: real bucket-formation behavior (FR-BKT-03..07 remain
-algorithmic), Discord ingestion, AI services or calls, relevance/proposal *model* runs,
-review/task/notification *API or UI*, authorization engine, worker orchestration, or the
-frontend. Phase 3+ owns ingestion/processing pipeline executable behavior, AI orchestration
-(SRS §7), authorization enforcement (FR-AUT-*), and app surfaces (§3.10, FR-UI-*).
+Phase 2 **does not deliver** (original scope boundary): Discord ingestion, AI services or
+calls, relevance/proposal *model* runs, review/task/notification *API or UI*, authorization
+engine, worker orchestration, or the frontend. Phase 3+ owns ingestion/processing pipeline
+executable behavior, AI orchestration (SRS §7), authorization enforcement (FR-AUT-*), and
+app surfaces (§3.10, FR-UI-*).
 
-## 2. Current status (verified 2026-10-19)
+Scope note (working-tree reality, 2026-10-19): bucket formation — originally algorithmic
+later-phase work (FR-BKT-03..08, §10.1) — was implemented ahead of Phase 3 by the approved
+Revision 4 slice (`backend/bucketing.py`, migration `0010_source_group_progress.sql`,
+`tests/test_bucketing_service.py`; see §8). That slice and Slice 2.11 sit alongside the
+Phase 2 data layer in the working tree; the Phase 2 boundary itself is unchanged.
 
-- HEAD: `855ebb75ed3b21a698411a3163ced396aebd7994` — "Bucket schema added"
-  (Slices 2.4 and 2.4.1 committed together; includes the FR-BKT-02 composite-FK
-  correction and the B1 retry-INSERT fix). Working tree was clean at the time the
-  repository state was first verified, before `docs/PHASE2_PLAN.md` itself was created
-  (§9 workflow keeps this plan document untracked and unstaged pending explicit
-  authorization).
+## 2. Current status (verified 2026-10-19, Phase 2 implementation complete)
+
+- HEAD: `14975b7af79dcb3d175ea83c4f447fb9428a250f` — "Improved Phase 2 plan"
+  (the commit that added this document after Slices 2.3–2.5 planning; commits
+  `ef15418`, `702cb5c`, `6bac7ba` and `855ebb7` brought migration versions 1–3).
+  The working tree carries unstaged/uncommitted Phase-B work: edits to this plan
+  document and to `docs/SRS.md` (the FR-TSK-06/FR-TSK-13 requirement-text
+  restorations, verified verbatim against the original DOCX by the project owner),
+  plus new untracked files — `backend/db/migrations/0004_processing_attempts.sql`
+  and its tests (Slice 2.5), `0005_proposals.sql` and its tests (Slice 2.6),
+  `0006_tasks.sql` and its tests (Slice 2.7), `0007_cross_vertical_approvals.sql`
+  and its tests (Slice 2.8), `0008_notifications.sql` and its tests (Slice 2.9),
+  `0009_announcements.sql` and its tests (Slice 2.10),
+  `0010_source_group_progress.sql` + `backend/bucketing.py` + its tests
+  (bucket-formation slice, approved Revision 4 semantics, review fix M1 applied:
+  closure uses each bucket's persisted `parameters_used`; missing/malformed
+  records fail loudly), and `0011_latency_measurements.sql` + its tests
+  (Slice 2.11, NFR-PERF-02 recording shape).
+  `session-ses_eb9c.md` is untracked and out of scope (never read, never staged).
 - Committed migrations: `0001_core_roster.sql`, `0002_source_messages.sql`,
-  `0003_buckets.sql` (versions 1–3).
-- Full suite green at last run: **194 tests collected and passed**
-  (`pytest -p no:cacheprovider -q`, exit 0).
-- Note: earlier drafts of this plan assumed 2.4 was uncommitted; the repository now shows
-  it committed. The committed 0003 enforces FR-BKT-02 (same-group membership) via two
-  composite foreign keys plus parent-coverage unique indexes `ux_source_message_id_group`
-  and `ux_bucket_id_group` — an approved Slice 2.4.1 correction, applied pre-commit.
+  `0003_buckets.sql` (versions 1–3). Implemented but uncommitted: versions 4–11
+  (all Phase-2 data-layer tables plus the bucket-progress and latency tables).
+- Full suite green at last run: **486 tests passed** (prior committed baseline:
+  194). The committed 0003 enforces FR-BKT-02 (same-group membership) via two
+  composite foreign keys plus parent-coverage unique indexes
+  `ux_source_message_id_group` and `ux_bucket_id_group` — an approved Slice 2.4.1
+  correction, applied pre-commit.
 
 ## 3. Slice roadmap
 
-Progress markers are factual. Everything past Slice 2.4 is a plan subject to the normal
-per-slice approval flow (`/slice n` → approval → tests first → `/implement` → `/review` →
-commit authorization). Adding a database CHECK that enumerates a state/outcome vocabulary
+Progress markers are factual. Slices 2.5–2.10 were implemented in directed owner rounds
+(the Phase-B persistent-data round and the FR-TSK-06/13 restoration round that unblocked
+Slices 2.7–2.9); Slices 2.11 and the bucket-formation slice were implemented under the
+Phase 2 completion authorization (2026-10-19) — each tests-first. Committing all Phase-B
+work still awaits review and
+explicit owner authorization. Adding a database CHECK that enumerates a state/outcome vocabulary
 (for example the §4.1 line 509 attempt outcomes, FR-REV-01 review states, FR-XV-04
 decisions) follows the established **D1 decision process**: the vocabulary must be
 SRS-verbatim and explicitly approved by the project owner at that slice's planning step.
 
 ### Status legend
-- [x] committed · [ ] planned
+- [x] committed · [x] implemented (storage/schema + tests, uncommitted) · [ ] planned
 
 ### Slice 2.1 — Database connection and migration infrastructure [x committed, `ef15418`]
 - Purpose/scope: SQLite connection factory (`connect`, WAL, `PRAGMA foreign_keys = ON`
@@ -98,129 +119,384 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
 - Open blockers: FR-BKT-04, FR-BKT-05 (blank bodies). Raised as a requirements issue for
   the project owner; the bucketing-formation slice cannot be planned until they are filled.
 
-### Slice 2.5 — Processing attempts and relevance decisions [ ] planned
-- Purpose/scope (proposed): `0004_processing_attempts.sql` (single migration, possibly split
-  at slice planning) —
-  - `processing_attempt`: stage, input references (bucket/message), model id + version,
-    prompt/configuration version, started/finished times, outcome
-    (`SUCCEEDED | FAILED_RETRYABLE | FAILED_PERMANENT` — §4.1 line 509), error text,
-    tie-break/skew fields; append-only rows; retry creates a **new** attempt (NFR-REL-01/03).
-    Classifier failure (timeout, model unavailable, malformed output, infrastructure
-    error — FR-REL-07) is recorded on the **attempt row's outcome/error fields**; this is
-    not a relevance decision.
-  - `relevance_decision`: bucket FK, message FK, attempt FK, decision restricted to
-    `RELEVANT | IRRELEVANT` — FR-REL-02 (no UNCERTAIN decision state), timestamp,
-    immutability (FR-REL-06 — no UPDATE path), provenance per FR-REL-05 (message, bucket,
-    attempt, model/prompt version, output, timestamp).
-    **Proposed design, to confirm at `/slice 2.5` planning:** classifier-failure state is
-    NOT duplicated into decision rows. `source_message.flag_unclassified` (0002, FR-REL-07)
-    stays the single authoritative UNCLASSIFIED marker; decision rows exist only when the
-    classifier produced RELEVANT/IRRELEVANT; human override is a **separate record** type
-    (FR-REL-06; the correction *interface* is Post-MVP FR-PM-05 — the record shape may
-    land here).
+### Slice 2.5 — Processing attempts and relevance decisions [x] implemented (storage/schema + tests)
+- Purpose/scope (implemented): `0004_processing_attempts.sql` (single migration, version 4) —
+  - `processing_attempt`: stage free text (no SRS stage vocabulary), input reference =
+    `bucket_id` NOT NULL (approved Slice 2.5 design choice, FR-REL-01; a future
+    non-bucket-scoped stage would require a new migration — see open items; this does
+    not change the current schema), model_id/model_version/config_version nullable
+    (may be absent when a stage failed before the model ran; missing stored as missing,
+    DR-04), started/finished times stored verbatim (no format CHECK), outcome
+    (`SUCCEEDED | FAILED_RETRYABLE | FAILED_PERMANENT` — §4.1 line 509 verbatim,
+    owner-approved set), error text nullable and never empty. Classifier failure
+    (timeout, model unavailable, malformed output, infrastructure error — FR-REL-07) is
+    recorded on the attempt row's outcome/error fields only; it is not a relevance
+    decision, and decision rows exist only for actual classifier outputs.
+  - `relevance_decision`: composite FK `(bucket_id, message_id)` → `bucket_message` PK
+    (the decision's message must be an actual member of the named bucket — FR-REL-01/
+    FR-REL-05); composite FK `(attempt_id, bucket_id)` → `processing_attempt (id,
+    bucket_id)` covered by the vacuous `ux_processing_attempt_id_bucket` (the attempt
+    belongs to the same bucket as the decision — FR-REL-01); `UNIQUE (attempt_id,
+    message_id)` (retry safety — NFR-REL-01; retry creates a **new** attempt, NFR-REL-03
+    recording shape); decision restricted to `RELEVANT | IRRELEVANT` — FR-REL-02 verbatim
+    (no UNCERTAIN decision state), timestamp verbatim; provenance copied per decision
+    row (model_id, model_version, prompt_version — owner-approved; FR-REL-05).
+  - `relevance_correction`: human override as a **separate record** type (FR-REL-06),
+    referencing the original decision (FK RESTRICT) and the roster person (FK RESTRICT;
+    deactivation keeps attribution — FR-AUT-07); `corrected_decision` uses the
+    FR-REL-02 vocabulary verbatim; `corrected_at` stored verbatim. The correction
+    *interface* is Post-MVP (FR-PM-05). Storage only: the database does **not** enforce
+    append-only writes, determine which correction is effective, order corrections by
+    recency, or authorize correction creation.
+- Open items (recorded at `/review`; approved choices vs unresolved future behavior):
+  - AU-1 (open): §4.1 "input reference" does not name its entity for every future
+    stage. Approved now: bucket-only, NOT NULL. A future non-bucket-scoped stage
+    would need a rebuild migration; no schema change until it exists.
+  - AU-2 (resolved for storage): `stage` remains free text because the SRS does not
+    define a closed stage vocabulary; naming conventions are service-side only.
+  - AU-3a (open): FR-REL-06 "the corrected result is the one the system would use
+    from that moment" — whether history/exports must retroactively honor corrections
+    is unresolved.
+  - AU-3b (open): several corrections per decision are permitted (no UNIQUE rule);
+    recency-win selection is an interpretation, not schema-enforced.
+  - AU-3c (open): effective-correction selection requires a consistent timestamp
+    representation plus the selection rule; a future service-level slice must define
+    both. Correction timestamps are stored verbatim; no format CHECK exists.
+  - AU-4 (open): the correction-creation path in the MVP is undefined (the correction
+    interface is Post-MVP, FR-PM-05); FR-AUT-02 does not list relevance correction
+    among protected operations.
+  - AU-5 (open): whether a correction equal to the original decision is meaningful is
+    unspecified by the SRS; the schema permits it.
+  - Q1 (accepted): a `SUCCEEDED` attempt with a non-null `error` is permitted; the SRS
+    does not prohibit it and no CHECK was added.
 - Dependencies: 2.3, 2.4.
-- Tests (required): immutability/reject malformed values; outcome vocabulary; attempts
-  never deleted (append-only); one decision per message per attempt; failed attempts keep
-  earlier records intact (NFR-REL-01/03/04); classifier failure never stored as
-  IRRELEVANT (FR-REL-07, AC-12/13 — recorded marker semantics previously resolved:
-  UNCLASSIFIED = classifier-failure marker); duplicate retry creates a new attempt without
-  duplicate decisions; DR-07 retention.
-- Acceptance: storage-level only. AC-12/AC-13 mapped to historian tests (recorded marker
-  survives; no behavior beyond recording).
+- Tests (delivered, 39 functions / 41 cases; one outcome test parametrized ×3):
+  idempotency/failure isolation; attempt nullability, outcome vocabulary including
+  unknown/NULL/whitespace rejections, free-text stage, error domain, verbatim
+  timestamps, model/config optionality; decision vocabulary and provenance
+  rejections; duplicate (attempt, message) pair rejected; retry via a new attempt
+  accepted; second-connection concurrency; multiple messages per attempt; composite-FK
+  reject sides (message not a member; message of another bucket; attempt of another
+  bucket) and accept sides; unknown message/attempt; deletion RESTRICT in every
+  direction; FAILED_RETRYABLE attempt with zero decisions and untouched message
+  (FR-REL-07/AC-12 shape); `PRAGMA foreign_key_check` clean on a mixed workload;
+  corrections: both tokens, invalid/NULL/whitespace rejected, unknown decision/person,
+  decision row unchanged after a correction is inserted (documents service-level
+  immutability), multiple corrections per decision permitted.
+- Acceptance: storage-level only. Service-level behavior — retry orchestration,
+  classifier execution, effective-correction selection, correction authorization,
+  UNCLASSIFIED flag propagation — is **not** implemented by this slice and is not
+  claimed anywhere. AC-12/AC-13 are covered as recording-shape tests only.
 - Exclusions: any classifier execution, masking calls in pipeline, fallback classifier
-  logic (NFR-REL-07 recording fields only), relevance *decisions for real messages*.
+  logic (NFR-REL-07 recording fields only), relevance *decisions for real messages*,
+  correction UI/workflow/authorization.
 
-### Slice 2.6 — Proposals, revisions, provenance, review state [ ] planned
-- Purpose/scope (proposed): `0005_proposals.sql` (+ possibly 0006) —
-  - `proposal_generation_run` (per closed bucket; zero+ proposals out — FR-PRP-04/12).
-  - `proposal`: type (`TASK | ANNOUNCEMENT` — FR-PRP-06), description, assignment mode
-    (`EXPLICIT | OPEN | NONE` — FR-PRP-08), proposed assignee text, people needed,
-    source vertical (group-derived, FR-PRP-07/09), suggested responsible vertical,
-    affected verticals, task type suggestion, primary source message FK (exactly one —
-    FR-PRP-03), context message links, generic attributes (key/value rows — FR-PRP-07),
-    structural validation status (FR-PRP-13), provenance (run, model, prompt version —
-    FR-PRP-12), review state (`PENDING | EDITED | ACCEPTED | REJECTED` — FR-REV-01),
-    placeholder fields visible but unconfirmed (FR-PRP-11, AC-06 "unconfirmed" flag).
+### Slice 2.6 — Proposals, revisions, provenance, review state [x] implemented (storage/schema + tests, uncommitted)
+- Purpose/scope (implemented): `0005_proposals.sql` —
+  - Generation-run representation: **`processing_attempt` rows reused** (0004; `stage`
+    is free text per AU-2, e.g. a service-side `proposal_generation` convention) —
+    bucket-scoped per FR-PRP-01. One run yields **zero or many** proposals (FR-PRP-04;
+    no proposal rows is a valid outcome) and one source message may yield **several
+    proposals in the same run** (AC-02: "one message with two tasks"), so proposal
+    candidate multiplicity carries **no UNIQUE rule** on (attempt, message); retry
+    duplication avoidance (NFR-REL-01, retried run = a **new** attempt row, NFR-REL-03)
+    is a service-level discipline, not a schema guarantee.
+  - `proposal`: type (`TASK | ANNOUNCEMENT` — FR-PRP-06), description (NULL =
+    absent/placeholder per FR-PRP-11/DR-04), assignment mode
+    (`EXPLICIT | OPEN | NONE` — FR-PRP-08), proposed assignee text (model output
+    verbatim, FR-PRP-10), people needed (positive integer or `people_needed_unlimited`
+    flag — UNLIMITED verbatim from FR-REV-06; mutually exclusive CHECK), task type
+    (`INTERNAL | CROSS_VERTICAL` — FR-PRP-09), source vertical NOT NULL (group-derived,
+    unmapped groups never propose — FR-PRP-02), suggested responsible vertical
+    (nullable), primary source message FK (exactly one, real `bucket_message` member —
+    FR-PRP-03), context message links (bucket-mates only, FR-PRP-03/12), generic
+    attributes (key/value rows — FR-PRP-07), structural validity stored as a **boolean
+    column** (`structurally_valid 0|1`; FR-PRP-13 — no invented status-token vocabulary,
+    per the D1 rule), provenance copied per candidate (run attempt, bucket, message,
+    model, prompt version, generated timestamp — FR-PRP-12, NFR-AUD-01/02), review
+    state (`PENDING | EDITED | ACCEPTED | REJECTED` — FR-REV-01 verbatim; mutable
+    column, transitions are service-level).
   - `proposal_revision`: one immutable revision per edit (FR-REV-03), who changed which
-    fields (FR-REV-09), original generated version unchanged.
-  - Assignee resolution records per FR-PRP-10 (mention exact; name match one/many/none),
-    reviewer assignment (FR-REV-02: reviewer = sender of primary message), accept
-    uniqueness (FR-REV-05 / AC-18: repeated/simultaneous accept produces one — schema +
-    service responsibility), acceptance gating data (FR-REV-06).
+    fields (FR-REV-09: `changed_fields` JSON-as-supplied), full field snapshot on each
+    revision (including attribute and affected-vertical child rows); original generated
+    version unchanged (storage permits UPDATE — immutability is a service-level
+    discipline, no triggers).
+  - "Unconfirmed" markers (AC-06/FR-UI-06) are **derived at the service layer** from
+    `changed_fields`; no stored flag column exists in this schema.
+  - Acceptance integrity (FR-REV-05 "Accepting shall create exactly one task or
+    announcement. Two simultaneous accepts, or a repeated accept, shall produce one";
+    AC-18) — analyzed against the project's constraints (SQLite declarative
+    constraints only; no triggers; no new dependencies):
+    - Alternatives considered and rejected: (a) triggers serializing an accept
+      across the task and announcement tables — prohibited by the no-trigger
+      invariant (§5 item 7); (b) cross-table CHECKs — SQLite CHECK expressions
+      cannot reference other tables and cannot contain subqueries; (c) one merged
+      accepted-record table keyed `UNIQUE (proposal_id)` with a kind
+      discriminator — the only declarative XOR shape, but it collapses the §4.1
+      Task and Announcement entities (distinct state semantics: FR-TSK-02
+      dimensions vs announcement audience) and is a storage-design change that
+      requires owner approval, not a verification fix; (d) a proposal-side
+      outcome-kind marker or a separate acceptance-registry table that both task
+      and announcement would reference — adds derived state with no declarative
+      enforcement (nothing forces the marker/registry row to match the outcome
+      row, or to exist at all), rejected as derived-authoritative duplication
+      (DR-03/DR-06 discipline).
+    - Strongest schema guarantees under these constraints: 2.7's `task` and
+      2.10's `announcement` each carry `UNIQUE (proposal_id)` with RESTRICT
+      FK chains into `proposal`. Combined, the two tables hold **at most one task
+      and at most one announcement per proposal**; a proposal holding one of each
+      simultaneously is NOT excluded by the schema.
+    - Remaining service-level guarantees (precise): an accept decision writes
+      exactly one of the two kinds, never both, inside one transaction (this
+      serialization is what satisfies AC-18); no task/announcement row may be
+      created except as part of an accept decision; and there is no acceptance
+      without either kind (FR-REV-06 blocking, FR-REV-07 rejection retention are
+      also service-level).
 - Dependencies: 2.5 (attempt/provenance FKs), 2.2 (roster), 2.3 (messages).
-- Tests: immutability of revisions; review-state vocabulary; one-primary-message rule;
-  zero proposals valid (AC-03); independent proposals from one run (AC-02); accept
-  idempotency/concurrency shape (FR-REV-05 — exactly-one creation fact is service
-  behavior; schema supports at-rest uniqueness); rejection retention (FR-REV-07/AC-04).
+- Tests (delivered, 46 tests): migration
+  application/idempotency/ordered versions/failure isolation (out-of-band
+  0900/0901 fixtures); ptype, assignment-mode and task-type vocabularies with
+  unknown/whitespace/NULL rejections (FR-PRP-06/08/09); FR-PRP-08 directional rule
+  tested directly (TASK+NONE rejected; ANNOUNCEMENT+NONE and ANNOUNCEMENT+OPEN
+  stored), including the deliberately unenforced converse; review-state default
+  PENDING + token/invalid domain (FR-REV-01); description/assignee-text
+  NULL-vs-blank domains with verbatim storage (FR-PRP-11/DR-04); people-needed
+  domain (positive number, 0/1 UNLIMITED encoding, mutual exclusion, unfilled
+  allowed; FR-REV-06); structurally_valid boolean (FR-PRP-13); source-vertical
+  required and suggested responsible vertical optional; provenance required,
+  verbatim, non-blank (FR-PRP-12/NFR-AUD-01/02); composite FK pairings accepted
+  and mispaired/mismembership rejected (FR-PRP-12/FR-REL-01 chains); multiplicity
+  — several proposals from one message in one run (AC-02), zero proposals valid
+  (AC-03), retry via a new attempt (NFR-REL-01/03 shape); context/attribute/
+  affected-vertical link tables (member-only membership, per-proposal message
+  uniqueness, duplicate/unknown rejections); revisions — minimal row, sequence
+  numbering + duplicate revision_number rejection, unknown proposal/person,
+  changed_fields non-blank, snapshot values independent from the proposal row,
+  proposal row unchanged after a revision insert, multiple revisions, per-revision
+  attribute and affected-vertical children; deletion RESTRICT in every direction;
+  `PRAGMA foreign_key_check` clean on a mixed workload; duplicate revision insert
+  via a second connection keeps one row (NFR-CON-02 shape).
 - Acceptance: AC-02, AC-03, AC-05 storage aspects.
 - Exclusions: model runs, reviewer UI, edit/accept endpoints, assignee resolution
   *execution* (resolution logic = Phase 3), notifications (2.9 records only).
 
-### Slice 2.7 — Tasks, assignee records, state dimensions, history [ ] planned
-- **Blocked pending clarification: FR-TSK-06** (body blank) and **FR-TSK-13** (body
-  blank). Slice planning needs their content before finalizing the dimension list beyond
-  what FR-TSK-02 states.
-- Purpose/scope (planned, subject to the blanks): `0007_tasks.sql` (possibly + 0008) —
-  - `task` per FR-TSK-01: persistent ID, description, type, source vertical (immutable,
-    FR-TSK-09), responsible vertical, affected verticals, creator (= accepting reviewer,
-    FR-TSK-01), assignment mode, people needed, attributes.
-  - State dimensions per FR-TSK-02 ("independent dimensions; no single field encodes more
-    than one") — exact dimension list **blocked on FR-TSK-06**.
-  - `task_assignee`: person FK, agreement state (AWAITING initial per FR-TSK-03; accepted
-    only by in-app action or authorized on-behalf with that fact recorded — FR-TSK-05;
-    never inferred from reactions/silence — AC-09, FR-PM-01 boundary), work status,
-    timestamps.
-  - `task_history`: append-only per FR-TSK-11 (field, old, new, actor + model version,
-    time, reason/evidence, actor role + vertical at that time); NFR-AUD-01/03 (not
-    editable via any app interface); optimistic concurrency surfacing (FR-TSK-12, AC-19 —
-    version column).
-- Dependencies: 2.6 (accepts create tasks — FR-REV-05), 2.2, 2.3, 2.5.
-- Tests: dimension independence; EXPLICIT creates AWAITING assignees only (FR-TSK-03);
-  claim-competition equal to exactly-one claim shape (FR-TSK-04, AC-08 — live claiming is
-  Phase 3; at-rest uniqueness of (task, person) assignee is schema; NFR-CON-02 "simultaneous
-  accepts, claims and assignments shall each have exactly one winner" governs the service
-  behavior and the at-rest uniqueness shapes); history append-only; stale-version rejection
-  data (FR-TSK-12); no merge-on-similarity semantics (FR-TSK-15); AI never mutates
-  (FR-TSK-14 — records carry model actors read-only).
-- Exclusions: claiming/status/cancel flows (FR-TSK-04/05/08 behavior), escalation rules,
-  notifications, any AI involvement.
+### Slice 2.7 — Tasks, assignee records, state dimensions, history [x] implemented (storage/schema + tests, uncommitted)
+- Purpose/scope (implemented): `0006_tasks.sql` — `task` per FR-TSK-01 (persistent ID,
+  description, task type, source vertical, responsible vertical, affected verticals,
+  creator = the accepting reviewer, assignment mode, people needed, attributes) with
+  `version` for FR-TSK-12 stale-edit detection; `task_assignee` per FR-TSK-03/05 and
+  §4.1 ("Person, agreement, work status, timestamps"); `task_history` append-only per
+  FR-TSK-11/NFR-AUD-01 (`field_name`, old/new values, `changed_at`, actor = person **or**
+  model-with-version as FR-TSK-11 words it, `actor_role`, actor's vertical, reason);
+  `task_attribute`; `task_affected_vertical`. FR-TSK-06/13 bodies were restored in
+  `docs/SRS.md` (verbatim per the original DOCX) before this slice was implemented.
+- State dimensions per FR-TSK-02 are independent fields: assignment mode / cancellation /
+  approval state on `task`; agreement / work status / cancelled flag on each assignee
+  record — no single field encodes more than one dimension. Vocabularies are SRS-verbatim:
+  EXPLICIT|OPEN; AWAITING|ACCEPTED|DENIED; NOT_STARTED|IN_PROGRESS|COMPLETED;
+  ACTIVE|CANCELLED; NOT_REQUIRED|PENDING|APPROVED|DENIED.
+- Schema-expressible integrity: task type consistency per FR-XV-01 (CROSS_VERTICAL iff
+  responsible exists and differs from source; INTERNAL has no responsible value or keeps
+  the source vertical); people encoding mirrors owner-approved 0005 (`people_needed`
+  NULL ⇔ UNLIMITED with `people_needed_unlimited` 0/1; EXPLICIT always 1); task links
+  at most one task to a proposal (`UNIQUE (proposal_id)` — the task side of the FR-REV-05/
+  AC-18 single-object rule); reasonable-value CHECKs (version ≥ 1, non-blank description/
+  created_at, timestamps non-blank); `agreed_at` records the agreement decision time and
+  exists iff agreement ≠ AWAITING; RESTRICT FKs across the task→proposal→attempt→bucket
+  chain and roster (DR-01/DR-02/DR-04).
+- Transition enforcement (FR-TSK-06/13, resolved): under the project's no-trigger storage
+  pattern (SQLite CHECKs cannot compare a row across time) the schema cannot encode
+  transition legality; the schema contributes (a) SRS-verbatim vocabularies on the
+  current values, (b) the shape invariant that every assignee record starts
+  NOT_STARTED/AWAITING, and (c) the append-only `task_history` where every recorded
+  change (including each work-status and agreement transition) is stored with field,
+  old, new, time, reason and actor. Legality (NOT_STARTED → IN_PROGRESS → COMPLETED,
+  COMPLETED final; AWAITING → ACCEPTED/DENIED, FR-TSK-05/06/13) is the accepted service
+  layer's guarantee — same classification as the FR-REV-05/AC-18 task/announcement XOR.
+  FR-TSK-14 (AI never changes tasks) stays service-level; the history table's actor
+  fields store what was recorded (FR-TSK-11 wording) without authorizing model actors.
+- Claim capacity (FR-TSK-04, AC-08: two claims for the last place → one winner) is a
+  cross-row rule; the schema provides `(task_id, person_id)` uniqueness and
+  `people_needed`; the cap is service-level (NFR-CON-02).
+- Dependencies: 2.6 (FR-REV-05), 2.2, 2.3, 2.5.
+- Tests (delivered, 73 tests): migration creation/idempotency/ordered versions/failure
+  isolation (0900/0901 fixtures); minimum row + defaults (approval NOT_REQUIRED,
+  cancellation ACTIVE, version 1); task-type↔verticals consistency (valid shapes incl.
+  same-vertical INTERNAL; INTERNAL-mismatch / CROSS_WITHOUT_RESPONSIBLE / CROSS_SAME
+  rejected); people-encoding exclusivity across assignment modes (EXPLICIT=1 always;
+  OPEN count or NULL-only-with-UNLIMITED; 0/-1/count-with-1 rejected); approval-state,
+  cancellation and version domains; verbatim non-blank text; at-most-one task per
+  proposal (`UNIQUE`) — duplicate task row via a second connection keeps one row
+  (AC-18 schema side); two proposals → two coexisting tasks (AC-02 at task level);
+  assignees — two records on one task, defaults (AWAITING / NOT_STARTED / not-cancelled),
+  duplicate rejected, unknown task/person rejected, agreement + work-status token domains
+  (invalid include None/whitespace), `agreed_at`-iff-decided shape, cancelled flag domain,
+  task-vs-assignee cancellation independence (FR-TSK-02), removal and reassignment
+  (FR-TSK-05/16 storage shape), `added_at` required; attributes/affected-verticals —
+  storage incl. NULL attribute value, per-task uniqueness, unknown member rejection;
+  history — verbatim row, append-only two-edits shape (FR-TSK-11/NFR-AUD-03 storage
+  half), model actor stored with version, actor-shape violations rejected (both actor
+  kinds / neither / model without version), required fields non-blank, NULL old-value,
+  unknown task FK, person deletion restricted; recorded work-status + agreement change
+  sequence (schema contribution to FR-TSK-06/13); full-link workload `PRAGMA
+  foreign_key_check` clean (NFR-AUD-01/DR-01); deletion RESTRICT in every direction
+  (DR-02); duplicate-assignee cross-connection shape (NFR-CON-02).
+- Acceptance: AC-06/AC-16 storage aspects, AC-18 schema side, AC-19 data (version +
+  history).
+- Exclusions: claiming/status/cancel/cancel-notification *flows* (FR-TSK-04/05/07/08/16
+  behavior), stale-edit *rejection* transaction (FR-TSK-12 service), notifications
+  (2.9), approval requests/decisions (2.8), any AI involvement (FR-TSK-14 service).
 
-### Slice 2.8 — Cross-vertical approvals [ ] planned
-- Purpose/scope (proposed): `0008_cross_vertical_approvals.sql` — `approval_request` (per
-  §4.1 line 514: request, recipients, decision, messages; FR-XV-03: created PENDING and
-  not visible to volunteers), `approval_decision` records (first decision wins — FR-XV-04;
-  later attempts change nothing), requester/message linkage, task-history integration per
-  FR-XV-06.
-- Dependencies: 2.7 (tasks), 2.2 (roles/AH/Head).
-- Tests: PENDING initial; decision vocabulary; first-decision-wins idempotency;
-  decision retained on denial (FR-XV-05, AC-15); hidden-visibility is a *service*
-  guarantee (schema records state only).
-- Exclusions: visibility enforcement, notification delivery (2.9), any UI.
+### Slice 2.8 — Cross-vertical approvals [x] implemented (storage/schema + tests, uncommitted)
+- Purpose/scope (implemented): `0007_cross_vertical_approvals.sql` — `approval_request`
+  (one per task: `task_id NOT NULL UNIQUE`; FR-XV-03 requester, optional requester
+  message, `created_at`), `approval_recipient` (request-time snapshot of "every AH and
+  the Head of the responsible vertical" — person rows referenced at request time;
+  role/time eligibility is roster-state, service-level per FR-ROS-01),
+  `approval_decision` (`UNIQUE (request_id)` — the schema half of first-decision-wins,
+  FR-XV-04/AC-15; `decided_by`, APPROVED|DENIED vocabulary per FR-TSK-02, optional
+  never-blank decision message, `decided_at`). A Head's own cross-vertical task has no
+  request row (FR-XV-02, AC-14). Denial keeps the decision (FR-XV-05); recording
+  requests/decisions/messages in `task_history` with actor role/vertical (FR-XV-06) is
+  a service write into the 0006 table.
+- Deliberately separate: approval state is the FR-TSK-02 Approval dimension on `task`.
+  Approval decisions are never conflated with assignee agreement (FR-TSK-13) or work
+  status (FR-TSK-06) — disjoint tables/columns; the schema cannot check that
+  `decided_by` was a recipient at decision time (service guarantee), and visibility
+  (PENDING tasks hidden from volunteers) is app behavior.
+- Dependencies: 2.7 (FK into `task`), 2.2 (roster), 2.6 (proposal chain).
+- Tests (delivered, 25 tests): migration creation/idempotency/ordered versions/failure
+  isolation; minimum request row (NULL message default); one request per task
+  (`UNIQUE task_id` duplicate, unknown task FK); requester message verbatim; blank
+  request/decision messages rejected (each rejection is the first insert in scope so
+  CHECK is never shadowed by UNIQUE); `created_at` non-blank; unknown requester +
+  person deletion restricted; Head's cross-vertical task has no request row (AC-14);
+  recipients — snapshot rows, duplicate pair rejected, unknown person/request rejected,
+  recipient person deletion restricted; decision vocabulary APPROVED/DENIED (unknown/
+  whitespace/None rejected), decision message optional-verbatim, required fields,
+  unknown decider; first decision wins (`UNIQUE` — second decision rejected; second-
+  connection attempt keeps one row, NFR-CON-02); DENIED decision + task state kept
+  (FR-XV-05 storage half); task approval-state updates PENDING→APPROVED follow the
+  vocabulary (FR-TSK-02); full chain `PRAGMA foreign_key_check` clean; task/proposal/
+  attempt/request deletion RESTRICT (DR-02).
+- Acceptance: AC-14/AC-15 schema aspects.
+- Exclusions: visibility enforcement, decision-time recipient re-check, requester
+  notification (2.9 records), history recording of approval events (service), any UI.
 
-### Slice 2.9 — Notification records [ ] planned
-- Purpose/scope (proposed): `0009_notifications.sql` — `notification` (event type from the
-  FR-NOT-01 table, recipient person, linked authoritative record, delivery state, attempts
-  and outcomes; per §4.1 line 516). Design contract: a change must commit even when its
-  notification fails (FR-NOT-04, AC-17 — same durability pattern as FR-ING-05:
-  change first, notification later, never one transaction); retry key prevents duplicate
-  send for the same event+recipient (FR-NOT-05). One notification per event, no batching
-  (FR-NOT-02).
-- Dependencies: 2.2, 2.6, 2.7, 2.8 (event sources).
-- Tests: failure-does-not-block-change; retry-without-duplicate unique key; wording/state
-  fidelity is service-side (record fields only).
-- Exclusions: push delivery, in-app list UI, backend push integration (Phase 3+,
-  FR-PM-06 batching is Post-MVP).
+### Slice 2.9 — Notification records [x] implemented (storage/schema + tests, uncommitted)
+- Purpose/scope (implemented): `0008_notifications.sql` — `notification` per FR-NOT-01/
+  §4.1 ("Event, recipient, delivery state"): `event_type` carries the service's event
+  label as free text (the FR-NOT-01 table lists events in prose; no invented token
+  vocabulary), `recipient_person_id` FK, exactly one subject FK — proposal, task,
+  approval request or announcement — enforced by a CHECK sum, so every notification
+  connects to its authoritative record chain (DR-01); `delivery_state` free text with
+  a `PENDING` default (the SRS names no token set — recording only); `created_at`.
+  `notification_attempt` per FR-NOT-04/NFR-REL-02/AC-17: append-only attempt rows
+  ordered by `attempt_number` (UNIQUE per notification, ≥ 1), each storing `outcome`,
+  optional never-blank `error`, `recorded_at` — a failure is recorded as its own row
+  and can never undo the committed change that raised it.
+- Deduplication (FR-NOT-05, NFR-REL-01): `dedupe_key NOT NULL UNIQUE` — the service
+  composes the key from event + recipient + subject, so a retry inserts nothing and
+  therefore sends no duplicate. Two different events for the same proposal coexist
+  (FR-NOT-02: one notification per event, no batching).
+- Storage does not deliver: sending/push channels/workers (FR-NOT-04 retry *execution*,
+  FR-NOT-06 push capability, FR-NOT-07 phone/in-app surfaces — Phase 3/app),
+  wording fidelity (FR-NOT-03, presentation), masking/value vocabularies beyond the
+  non-blank rule.
+- Dependencies: 2.2, 2.6, 2.7, 2.8 (subject FKs), 2.10 (announcement subject).
+  Cross-slice ordering note: `0008` declares `announcement_id ... REFERENCES
+  announcement`, but the `announcement` table is created by `0009` (2.10), which
+  applies immediately *after* `0008`. SQLite resolves FK targets lazily at DML
+  time, so the ordered fresh-DB apply works (probe: versions `[1..9]`, 0 FK
+  violations, and all four subject types record). Limitation: a database migrated
+  only through version 8 cannot accept announcement-subject notification inserts
+  ("no such table") until `0009` is applied — always apply through the full
+  manifest before any service writes. Renumbering would churn committed names,
+  tests, and documentation for no behavioral gain; the runner applies the full
+  ordered set every time.
+- Tests (delivered, 22 tests): migration creation/idempotency/ordered versions/failure
+  isolation; minimum task-subject row with `PENDING` default; each of the four subject
+  types records exactly one FK; zero/two subject combos rejected; unknown recipient or
+  subject rejected; required text fields non-blank; two events for one proposal coexist
+  (FR-NOT-02); retry with the same event/recipient does not duplicate a notification
+  (`UNIQUE` — plus a cross-connection variant, NFR-CON-02); same event to two recipients
+  and on two tasks coexist; `delivery_state` stores the service's word verbatim; attempt
+  rows stored and ordered, duplicate `attempt_number`/zero/unknown notification rejected;
+  blank outcome/error-domain/time-format rejections; AC-17 failure-shape (committed task
+  untouched while SUCCEEDED/FAILED attempt rows accumulate); full-chain
+  `PRAGMA foreign_key_check` clean; deletion RESTRICT for recipient/subjects/notification.
+- Acceptance: AC-17 (recording half).
+- Exclusions: delivery, retry workers/scheduling, in-app list UI, push integration
+  (Phase 3+; FR-PM-06 batching is Post-MVP).
 
-### Slice 2.10 — Announcement records [ ] planned
-- Purpose/scope (proposed): `0010_announcements.sql` — accepted-announcement record per
-  FR-REV-10 ("audience: a Head's vertical, or the sender AH's volunteers; shall not create a
-  task") linked to its proposal and acceptance reviewer, audience definition fields,
-  FR-NOT-06 push scope fields. Announcements are proposals with type ANNOUNCEMENT
-  (FR-PRP-06) that become announcement records on accept — no separate "task-like" state.
-- Dependencies: 2.6, 2.2 (audience = vertical / reports-to structure), 2.7 history.
-- Tests: no task created on accept (record shape + FR-REV-05 single-object rule); audience
-  linkage integrity; retained with proposal lineage (DR-01).
-- Exclusions: display surfaces (FR-UI-*), push behavior.
+### Slice 2.10 — Announcement records [x] implemented (storage/schema + tests, uncommitted)
+- Purpose/scope (implemented): `0009_announcements.sql` — accepted-announcement record per
+  FR-REV-10 ("shall be shown to its audience (a Head's vertical, or the sender AH's
+  volunteers) and shall not create a task") linked to its proposal and acceptance
+  reviewer, with audience definition fields. FR-NOT-06 ("Heads shall be able to push
+  announcements and notifications to their vertical; AHs ... to the volunteers under
+  them") is the *push capability* — its enforcement and delivery belong to Phase 3
+  (§3.9 authorization row "Push announcements", §8 later-phase boundary); it is not a
+  field of this schema. Announcements are proposals with type ANNOUNCEMENT (FR-PRP-06)
+  that become announcement records on accept — no separate "task-like" state.
+- As implemented: one `announcement` row per accepted proposal — `proposal_id NOT NULL
+  UNIQUE` (the announcement's schema side of the FR-REV-05/AC-18 single-object rule, per
+  the Slice 2.6 acceptance-integrity analysis), `accepted_by`/
+  `accepted_at` verbatim (FR-REV-01/02), audience as `audience_vertical_id` FK (nullable;
+  a Head's vertical) plus `audience_scope` free text NOT NULL (the SRS defines no audience
+  vocabulary). "Shall not create a task" is service-level. Deletions RESTRICT the
+  proposal/person/vertical chain (DR-01/DR-02).
+- Dependencies: 2.6 (proposal and review-acceptance chain), 2.2 (vertical roster for
+  `audience_vertical_id`). No FK into task tables — `0009` depends only on `0005` tables
+  and applies alongside them (gap-tolerant runner); the task/announcement XOR itself is
+  a service-level guarantee completed by 2.7's `task`.`UNIQUE (proposal_id)`.
+- Tests (delivered, 12 tests): migration creation/idempotency/ordered versions (gap-tolerant
+  set assertions — 0009 applies without the 2.7–2.9 tables existing); minimum fields stored
+  verbatim with NULL `audience_vertical_id`; named-vertical audience row; unknown
+  proposal/person/vertical rejections; NOT NULL and blank-field rejections; one announcement
+  per proposal (UNIQUE — duplicate insert rejected); two separately accepted proposals each
+  keep their own announcement row; deletion RESTRICT (person/vertical/proposal);
+  `PRAGMA foreign_key_check` clean.
+- Exclusions: display surfaces (FR-UI-*), push delivery and authorization (FR-NOT-06/07,
+  Phase 3+).
+
+### Slice 2.11 — Latency measurement records [x] implemented (storage/schema + tests, uncommitted)
+- Purpose/scope (implemented): `0011_latency_measurements.sql` (version 11) —
+  `latency_measurement`, the NFR-PERF-02 recording shape (SRS line 615: "The system
+  shall record ingestion delay, bucket delay, classifier latency, proposal latency and
+  review waiting time, as P50, P95 and P99"). One row per raw measurement: `metric`
+  non-blank free text (the SRS names the five kinds in prose; no invented token
+  vocabulary per the D1 rule — same rationale as 0008's `event_type`), `value_seconds`
+  REAL NOT NULL ≥ 0 (unit named by the column; the SRS defines no unit vocabulary),
+  `recorded_at` verbatim non-blank, and **exactly one subject FK** — `source_message_id`,
+  `bucket_id`, `processing_attempt_id` or `proposal_id` — via the 0008 CHECK-sum
+  pattern, keeping every measurement traceable to its authoritative record chain
+  (DR-01); all FKs RESTRICT (DR-01/DR-02).
+- Deliberately not in the schema: P50/P95/P99 rows — NFR-PERF-02's "as P50, P95 and P99"
+  is the reporting form of the recordings; DR-03 (derived data never replaces source
+  content) and DR-06 (derived stores must be rebuildable from authoritative records) make
+  the raw measurement rows the authoritative record, and no SRS text requires persisting
+  percentile snapshots (the raw rows support later percentile computation at
+  read time; this slice implements no computation); the metric↔subject-type
+  pairing and per-metric value derivation (service-level, Phase 3); any §6.4 target values
+  (blank cells at SRS lines 608–611 are owner decisions; recording does not depend on them
+  and none is invented). No `metric` vocabulary CHECK: the SRS names the five kinds in
+  prose, not as tokens, and the D1 rule forbids a vocabulary-enumerating CHECK without
+  explicit owner approval at a slice's planning step (0008 `event_type` / 0009
+  `audience_scope` / 0004 `stage` precedent).
+- Dependencies: 2.3 (source_message), 2.4 (bucket), 2.5 (processing_attempt),
+  2.6 (proposal).
+- Tests (delivered, 15 tests): migration creation through v11/idempotency/failure
+  isolation (0900/0901 fixtures); minimum row with verbatim storage; each of the four
+  subject types records exactly one FK; zero/two-subject combos rejected; unknown
+  subject rejections; metric label domain (blank/whitespace/NULL); value domain
+  (NULL/negative rejected, 0 accepted); `recorded_at` required non-blank; many
+  measurements per subject coexist (percentile grain); same metric label across two
+  subjects coexists (no UNIQUE on metric); deletion RESTRICT for all four subjects and
+  free deletion of measurement rows; `PRAGMA foreign_key_check` clean on a mixed
+  workload; cross-connection rows coexist (NFR-CON-02 shape).
+- Acceptance: recording shape only. Computing percentiles, deriving each metric from
+  source timestamps, benchmarking against §6.4 targets (NFR-PERF-01/03) are later-phase.
 
 ## 4. Migration numbering (derived from the repository, verified)
 
@@ -229,10 +505,14 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
 | 1 | `0001_core_roster.sql` | 2.2 | committed |
 | 2 | `0002_source_messages.sql` | 2.3 | committed |
 | 3 | `0003_buckets.sql` | 2.4 (+2.4.1 correction) | committed (HEAD `855ebb7`) |
-| 4 | `0004_processing_attempts.sql` (name set at slice planning) | 2.5 | planned |
-| 5 | proposal tables | 2.6 | planned |
-| 6– | tasks/assignees/history | 2.7 | planned (number finalized at slice planning) |
-| … | approvals → notifications → announcements | 2.8–2.10 | planned |
+| 4 | `0004_processing_attempts.sql` | 2.5 | implemented (storage/schema + tests, uncommitted) |
+| 5 | `0005_proposals.sql` | 2.6 | implemented (storage/schema + tests, uncommitted) |
+| 6 | `0006_tasks.sql` | 2.7 | implemented (storage/schema + tests, uncommitted) |
+| 7 | `0007_cross_vertical_approvals.sql` | 2.8 | implemented (storage/schema + tests, uncommitted) |
+| 8 | `0008_notifications.sql` | 2.9 | implemented (storage/schema + tests, uncommitted) |
+| 9 | `0009_announcements.sql` | 2.10 | implemented (storage/schema + tests, uncommitted) |
+| 10 | `0010_source_group_progress.sql` | bucket-formation slice (Revision 4) | implemented (schema + service + tests, uncommitted) |
+| 11 | `0011_latency_measurements.sql` | 2.11 | implemented (storage/schema + tests, uncommitted) |
 
 Rules: strictly increasing, one logical group per migration, never edit a committed
 migration (checksums enforce); later discoveries that would require editing a committed
@@ -274,20 +554,42 @@ instructions.
 
 | Requirement | State | Blocks |
 | --- | --- | --- |
-| **FR-BKT-04**, **FR-BKT-05** | bodies **blank** (SRS lines 222, 224; Figure 4 is informative) | bucket-formation slice (Phase 3 algorithmic work); Slice 2.4 schema deliberately stores fields only |
-| **FR-TSK-06** | body blank (line 348) | Slice 2.7 dimension list is provisional until filled |
-| **FR-TSK-13** | body blank (line 362) | Slice 2.7 scope boundary |
-| **§6.4 performance targets** | 4 target cells blank (lines 608–611: message→proposal P95, classifier P95, proposal P95, availability) | latency instrumentation schema for NFR-PERF-02 (records shape; do not invent target values) |
+| **FR-BKT-04**, **FR-BKT-05** | bodies now filled (SRS lines 222, 224, owner-approved restorations in the working tree). **Implemented 2026-10-19** in `backend/bucketing.py` with the approved Revision 4 semantics: strict FR-BKT-04 inequalities; `e = min(s + M, max(s + W, l + G))` (FR-BKT-05); closure only via accepted per-group event-time progress, `e + C <= P` inclusive; assignment never closes buckets or advances progress; late-message and predecessor-graph rules per Revision 4 | closed for this slice; see bucket-formation slice report for pending SRS amendments (progress authority, recovery-link fallback, cross-call order sensitivity) |
+| **FR-TSK-06**, **FR-TSK-13** | **resolved 2026-10-19** — bodies restored verbatim per the original SRS DOCX (owner-verified outside this repository; `docs/SRS.md` lines 348, 362) | none (Slices 2.7–2.9 implemented against the restored texts) |
+| **§6.4 performance targets** | 4 target cells blank (lines 608–611: message→proposal P95, classifier P95, proposal P95, availability) | **recording half resolved 2026-10-19** — the NFR-PERF-02 records shape is implemented (`0011_latency_measurements.sql`, Slice 2.11; raw measurement rows that support later P50/P95/P99 computation). The blank target cells themselves remain owner decisions; they block benchmark evaluation/acceptance (NFR-PERF-01/03) and production tuning, not recording |
 | **§7 AI targets** | target cells **blank at lines 670–675** (four blank targets: relevance precision; proposal type/assignment mode; assignee/task type; proposal acceptance overall — plus one blank *measure* cell in the same block); exception: "Description quality" is already supplied as **"Human-rated, no percentage"** (line 675) | evaluation tooling and acceptance by §10.3 "AI targets met" |
-| **§3.2 vs §10.1 bucketing parameters** | **unresolved owner decision** — SRS §3.2 parameter table sets W=15, C=2 (lines 209–214), while §10.1 test cases set W=10, C=3 (line 719); G=5 and M=30 agree. Must be resolved by the project owner **before bucket-formation implementation** (and before deciding what `bucket.parameters_used` records). Values are not chosen here. | bucketing-formation slice |
+| **§3.2 vs §10.1 bucketing parameters** | **partially resolved by Revision 4 (engineering lead, 2026-10-19), owner ratification still pending** — the bucket-formation slice implements and tests the §10.1 values (W=10, G=5, M=30, C=3) recorded per-bucket in `bucket.parameters_used`; the §3.2 table (W=15, C=2, SRS lines 209–214) still conflicts and requires the project owner's amendment before production tuning (pending amendment P6) | owner amendment for §3.2; production parameter tuning |
 | Deferred 2.3/2.4-era decisions | role vocabulary, unknown-channel ingestion policy, post-recovery UNCLASSIFIED clearing, `parameters_used` scope | future slices owning those behaviors |
 
 ## 8. Later-phase boundary (not delivered by Phase 2)
 
+Bucket formation itself was implemented after Phase 2 (approved Revision 4 slice,
+2026-10-19): `backend/bucketing.py`, migration `0010_source_group_progress.sql`,
+`tests/test_bucketing_service.py`. Proposed SRS amendments recorded there are pending
+owner approval; the original requirement texts are preserved. Review fix M1 is applied
+(closure uses each bucket's persisted `parameters_used`; missing or malformed records
+fail loudly).
+
+Latency instrumentation: the NFR-PERF-02 *recording* shape is Phase 2 (Slice 2.11,
+migration `0011`). Scope boundary, grounded in the SRS: NFR-PERF-02 (line 615) requires
+the system to record the five named latency kinds "as P50, P95 and P99" — the recordable
+atomic data is one row per raw measurement, and the percentile form is how those
+recordings are reported. DR-03 (line 529: derived data never replaces source content) and
+DR-06 (line 535: any derived store shall hold references to authoritative records and be
+rebuildable from them) make the raw measurement rows the authoritative record; stored
+percentile snapshots would be derived data with no SRS requirement anywhere to persist
+them. Computing percentiles, deriving each metric from source timestamps, and
+benchmarking against the §6.4 targets (NFR-PERF-01 line 613, NFR-PERF-03; the §10.3
+"A latency benchmark is recorded" milestone) are later-phase work. The `metric` column
+carries free-text labels because the SRS names the five kinds in prose, not as token
+constants, and the established D1 rule forbids adding a vocabulary-enumerating CHECK
+without explicit owner approval at a slice's planning step (same rationale as 0008's
+`event_type`, 0009's `audience_scope`, and 0004's `stage` per AU-2); the service layer
+owns using the SRS's five kinds as labels.
+
 Executable pipeline behaviors, orchestration and serving work all belong outside this
 phase, chiefly:
 
-- Bucket formation/join algorithm and close-time concurrency (FR-BKT-03..08; §10.1);
 - Discord ingestion (live adapter, export replay), pipeline orchestration and workers
   (NFR-REL-01..06 recording *records* is Phase 2; running them is not);
 - AI: relevance classification and proposal generation execution (SRS §7, AI-01..08),
