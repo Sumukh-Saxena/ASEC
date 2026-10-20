@@ -8,6 +8,19 @@ The system is being developed around a **Discord-based message substrate** for t
 
 ---
 
+## Implementation status note
+
+This document describes the **long-term vision** for ASEC; it is not a specification.
+The governing requirements document is [`docs/SRS.md`](docs/SRS.md) (SRS v2.0).
+Terminology follows the SRS: the ingestion component is the **Discord adapter** ("source
+adapter" in SRS terms; "Piggyback" below), messages are grouped into **buckets**
+(per-group processing windows), and the roles are **Admin, Head, Assistant Head (AH) and
+Volunteer** within a vertical. Per the SRS (§1.3), **attachments, source edits and
+deletions, threads, incident and emergency management, and voice input are post-MVP**
+and are not part of the MVP.
+
+---
+
 ## Vision
 
 During events, important information is often buried inside fast-moving group communication:
@@ -202,7 +215,7 @@ Discord ID
     ↓
 ASEC User
     ↓
-Area Head
+Assistant Head (AH)
     ↓
 Logistics
 ```
@@ -227,7 +240,7 @@ A simplified message event may look like:
   "message": {
     "id": "123456789",
     "content": "Need two volunteers at Gate 3",
-    "timestamp": "2026-01-01T12:00:00"
+    "timestamp": "2026-01-01T12:00:00+00:00"
   },
 
   "sender": {

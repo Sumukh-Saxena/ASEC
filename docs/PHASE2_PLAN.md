@@ -9,7 +9,7 @@ plan, not an implementation claim: schema existence never means behavior is impl
 ## 1. Purpose and boundary
 
 Phase 2 designs, migrates, and tests the **persistent data layer** of the ASEC MVP: every
-entity listed in SRS §4.1 (lines 500–517) with its integrity rules (§4.2, DR-01..DR-07),
+entity listed in SRS §4.1 (Entities) with its integrity rules (§4.2, DR-01..DR-07),
 implemented as versioned SQLite migrations plus their storage-level tests.
 
 Phase 2 **delivers**: migration infrastructure, roster/organization tables, source
@@ -30,43 +30,39 @@ Revision 4 slice (`backend/bucketing.py`, migration `0010_source_group_progress.
 `tests/test_bucketing_service.py`; see §8). That slice and Slice 2.11 sit alongside the
 Phase 2 data layer in the working tree; the Phase 2 boundary itself is unchanged.
 
-## 2. Current status (verified 2026-10-19, Phase 2 implementation complete)
+## 2. Current status (data layer complete at `4e4aae2`; ingestion, AI orchestration, services, authorization, API, notification delivery and app are not started)
 
-- HEAD: `14975b7af79dcb3d175ea83c4f447fb9428a250f` — "Improved Phase 2 plan"
-  (the commit that added this document after Slices 2.3–2.5 planning; commits
-  `ef15418`, `702cb5c`, `6bac7ba` and `855ebb7` brought migration versions 1–3).
-  The working tree carries unstaged/uncommitted Phase-B work: edits to this plan
-  document and to `docs/SRS.md` (the FR-TSK-06/FR-TSK-13 requirement-text
-  restorations, verified verbatim against the original DOCX by the project owner),
-  plus new untracked files — `backend/db/migrations/0004_processing_attempts.sql`
-  and its tests (Slice 2.5), `0005_proposals.sql` and its tests (Slice 2.6),
-  `0006_tasks.sql` and its tests (Slice 2.7), `0007_cross_vertical_approvals.sql`
-  and its tests (Slice 2.8), `0008_notifications.sql` and its tests (Slice 2.9),
-  `0009_announcements.sql` and its tests (Slice 2.10),
-  `0010_source_group_progress.sql` + `backend/bucketing.py` + its tests
-  (bucket-formation slice, approved Revision 4 semantics, review fix M1 applied:
-  closure uses each bucket's persisted `parameters_used`; missing/malformed
-  records fail loudly), and `0011_latency_measurements.sql` + its tests
-  (Slice 2.11, NFR-PERF-02 recording shape).
-  `session-ses_eb9c.md` is untracked and out of scope (never read, never staged).
-- Committed migrations: `0001_core_roster.sql`, `0002_source_messages.sql`,
-  `0003_buckets.sql` (versions 1–3). Implemented but uncommitted: versions 4–11
-  (all Phase-2 data-layer tables plus the bucket-progress and latency tables).
-- Full suite green at last run: **486 tests passed** (prior committed baseline:
-  194). The committed 0003 enforces FR-BKT-02 (same-group membership) via two
+- HEAD: `4e4aae2cb91b9d1f8293a732e6fc31281f9cdfff` — "Complete Phase 2: data-layer
+  slices 2.5-2.11 and bucket formation". All migrations `0001`–`0011` (roster,
+  source messages, buckets, processing attempts, proposals, tasks, approvals,
+  notifications, announcements, source-group progress, latency measurements)
+  are committed at this HEAD; nothing in versions 4–11 is uncommitted.
+  `backend/bucketing.py` (bucket formation, approved Revision 4 semantics,
+  review fix M1 applied: closure uses each bucket's persisted `parameters_used`;
+  missing/malformed records fail loudly) and the latency/bucketing test suites
+  are part of the same commit.
+  In the working tree, `docs/SRS.md` carries the owner's replacement with the
+  faithful SRS v2.0 conversion, and `session-ses_eb9c.md` is untracked and out
+  of scope (never read, never staged). The same working tree carries the
+  owner-directed Slice A4 correction, uncommitted: migration
+  `0012_resolution_and_mentions.sql` with its tests
+  (`tests/test_migrations_resolution.py`, `tests/test_migrations_fk_check.py`;
+  see §3 and §4).
+- Full suite green at last verified run (read-only pre-commit audit,
+  2026-10-20): **566 tests passed**. The pre-correction state was last verified
+  at 486 tests (historical; prior committed baseline: 194). The committed 0003
+  enforces FR-BKT-02 (same-group membership) via two
   composite foreign keys plus parent-coverage unique indexes
   `ux_source_message_id_group` and `ux_bucket_id_group` — an approved Slice 2.4.1
   correction, applied pre-commit.
 
 ## 3. Slice roadmap
 
-Progress markers are factual. Slices 2.5–2.10 were implemented in directed owner rounds
-(the Phase-B persistent-data round and the FR-TSK-06/13 restoration round that unblocked
-Slices 2.7–2.9); Slices 2.11 and the bucket-formation slice were implemented under the
-Phase 2 completion authorization (2026-10-19) — each tests-first. Committing all Phase-B
-work still awaits review and
-explicit owner authorization. Adding a database CHECK that enumerates a state/outcome vocabulary
-(for example the §4.1 line 509 attempt outcomes, FR-REV-01 review states, FR-XV-04
+Progress markers are factual. Slices 2.5–2.10 were implemented in directed owner rounds; Slices 2.11 and the
+bucket-formation slice were implemented under the Phase 2 completion authorization
+(2026-10-19) — each tests-first. All of that Phase-B work is committed at HEAD
+`4e4aae2`. Adding a database CHECK that enumerates a state/outcome vocabulary
+(for example the §4.1 Processing attempt outcomes, FR-REV-01 review states, FR-XV-04
 decisions) follows the established **D1 decision process**: the vocabulary must be
 SRS-verbatim and explicitly approved by the project owner at that slice's planning step.
 
@@ -112,10 +108,11 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
   DR-01/02/04, NFR-REL-04 (retry shape only).
 - **Not implemented and not to be inferred**: formation/join rules (FR-BKT-03/04/05/06),
   close-time concurrency behavior (FR-BKT-07), state transitions, a message "always having"
-  exactly one bucket — **FR-BKT-01 (SRS line 216) is the eventual guarantee that every
-  message belongs to exactly one bucket**, delivered by the future bucketing slice, not by
-  this schema; the §10.1 scenario rows (lines 717–736: duplicate delivery → one message;
-  message after closure → new bucket, earlier unchanged) corroborate it behaviorally.
+  exactly one bucket — **FR-BKT-01 (§3.2) is the eventual guarantee that every
+  message belongs to exactly one bucket**, delivered by the bucket-formation slice (now
+  implemented; see §1), not by this schema; the §10.1 scenario rows (Duplicate
+  delivery → one message; Message after closure → stored, new bucket, earlier
+  bucket unchanged) corroborate it behaviorally.
 - Open blockers: FR-BKT-04, FR-BKT-05 (blank bodies). Raised as a requirements issue for
   the project owner; the bucketing-formation slice cannot be planned until they are filled.
 
@@ -127,7 +124,7 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
     not change the current schema), model_id/model_version/config_version nullable
     (may be absent when a stage failed before the model ran; missing stored as missing,
     DR-04), started/finished times stored verbatim (no format CHECK), outcome
-    (`SUCCEEDED | FAILED_RETRYABLE | FAILED_PERMANENT` — §4.1 line 509 verbatim,
+    (`SUCCEEDED | FAILED_RETRYABLE | FAILED_PERMANENT` — §4.1 Processing attempt row verbatim,
     owner-approved set), error text nullable and never empty. Classifier failure
     (timeout, model unavailable, malformed output, infrastructure error — FR-REL-07) is
     recorded on the attempt row's outcome/error fields only; it is not a relevance
@@ -191,7 +188,7 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
   logic (NFR-REL-07 recording fields only), relevance *decisions for real messages*,
   correction UI/workflow/authorization.
 
-### Slice 2.6 — Proposals, revisions, provenance, review state [x] implemented (storage/schema + tests, uncommitted)
+### Slice 2.6 — Proposals, revisions, provenance, review state [x committed, `4e4aae2`]
 - Purpose/scope (implemented): `0005_proposals.sql` —
   - Generation-run representation: **`processing_attempt` rows reused** (0004; `stage`
     is free text per AU-2, e.g. a service-side `proposal_generation` convention) —
@@ -280,7 +277,7 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
 - Exclusions: model runs, reviewer UI, edit/accept endpoints, assignee resolution
   *execution* (resolution logic = Phase 3), notifications (2.9 records only).
 
-### Slice 2.7 — Tasks, assignee records, state dimensions, history [x] implemented (storage/schema + tests, uncommitted)
+### Slice 2.7 — Tasks, assignee records, state dimensions, history [x committed, `4e4aae2`]
 - Purpose/scope (implemented): `0006_tasks.sql` — `task` per FR-TSK-01 (persistent ID,
   description, task type, source vertical, responsible vertical, affected verticals,
   creator = the accepting reviewer, assignment mode, people needed, attributes) with
@@ -347,7 +344,7 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
   behavior), stale-edit *rejection* transaction (FR-TSK-12 service), notifications
   (2.9), approval requests/decisions (2.8), any AI involvement (FR-TSK-14 service).
 
-### Slice 2.8 — Cross-vertical approvals [x] implemented (storage/schema + tests, uncommitted)
+### Slice 2.8 — Cross-vertical approvals [x committed, `4e4aae2`]
 - Purpose/scope (implemented): `0007_cross_vertical_approvals.sql` — `approval_request`
   (one per task: `task_id NOT NULL UNIQUE`; FR-XV-03 requester, optional requester
   message, `created_at`), `approval_recipient` (request-time snapshot of "every AH and
@@ -383,7 +380,7 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
 - Exclusions: visibility enforcement, decision-time recipient re-check, requester
   notification (2.9 records), history recording of approval events (service), any UI.
 
-### Slice 2.9 — Notification records [x] implemented (storage/schema + tests, uncommitted)
+### Slice 2.9 — Notification records [x committed, `4e4aae2`]
 - Purpose/scope (implemented): `0008_notifications.sql` — `notification` per FR-NOT-01/
   §4.1 ("Event, recipient, delivery state"): `event_type` carries the service's event
   label as free text (the FR-NOT-01 table lists events in prose; no invented token
@@ -413,7 +410,9 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
   ("no such table") until `0009` is applied — always apply through the full
   manifest before any service writes. Renumbering would churn committed names,
   tests, and documentation for no behavioral gain; the runner applies the full
-  ordered set every time.
+  ordered set every time. Standing probe: a fresh database migrated through
+  version 11 (pre-A4 schema) is PRAGMA foreign_key_check clean - recorded by
+  tests/test_migrations_fk_check.py.
 - Tests (delivered, 22 tests): migration creation/idempotency/ordered versions/failure
   isolation; minimum task-subject row with `PENDING` default; each of the four subject
   types records exactly one FK; zero/two subject combos rejected; unknown recipient or
@@ -429,7 +428,7 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
 - Exclusions: delivery, retry workers/scheduling, in-app list UI, push integration
   (Phase 3+; FR-PM-06 batching is Post-MVP).
 
-### Slice 2.10 — Announcement records [x] implemented (storage/schema + tests, uncommitted)
+### Slice 2.10 — Announcement records [x committed, `4e4aae2`]
 - Purpose/scope (implemented): `0009_announcements.sql` — accepted-announcement record per
   FR-REV-10 ("shall be shown to its audience (a Head's vertical, or the sender AH's
   volunteers) and shall not create a task") linked to its proposal and acceptance
@@ -460,9 +459,9 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
 - Exclusions: display surfaces (FR-UI-*), push delivery and authorization (FR-NOT-06/07,
   Phase 3+).
 
-### Slice 2.11 — Latency measurement records [x] implemented (storage/schema + tests, uncommitted)
+### Slice 2.11 — Latency measurement records [x committed, `4e4aae2`]
 - Purpose/scope (implemented): `0011_latency_measurements.sql` (version 11) —
-  `latency_measurement`, the NFR-PERF-02 recording shape (SRS line 615: "The system
+  `latency_measurement`, the NFR-PERF-02 recording shape (§6.4, NFR-PERF-02: "The system
   shall record ingestion delay, bucket delay, classifier latency, proposal latency and
   review waiting time, as P50, P95 and P99"). One row per raw measurement: `metric`
   non-blank free text (the SRS names the five kinds in prose; no invented token
@@ -479,7 +478,7 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
   percentile snapshots (the raw rows support later percentile computation at
   read time; this slice implements no computation); the metric↔subject-type
   pairing and per-metric value derivation (service-level, Phase 3); any §6.4 target values
-  (blank cells at SRS lines 608–611 are owner decisions; recording does not depend on them
+  (§6.4 targets are filled in the SRS; recording does not depend on them
   and none is invented). No `metric` vocabulary CHECK: the SRS names the five kinds in
   prose, not as tokens, and the D1 rule forbids a vocabulary-enumerating CHECK without
   explicit owner approval at a slice's planning step (0008 `event_type` / 0009
@@ -498,6 +497,69 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
 - Acceptance: recording shape only. Computing percentiles, deriving each metric from
   source timestamps, benchmarking against §6.4 targets (NFR-PERF-01/03) are later-phase.
 
+### Slice A4 — Review resolution and mention storage [x] implemented (schema + tests, uncommitted; owner-directed correction)
+
+- Provenance: owner-directed correction slice (2026-10-20), implemented after
+  the read-only pre-commit audit of the committed Phase 2 set. One additive
+  migration, `0012_resolution_and_mentions.sql` (version 12); migrations
+  `0001`–`0011` are untouched.
+- Purpose/scope (implemented): three tables completing the review/assignment
+  resolution data surface (vocabulary CHECKs per the D1 rule, per the
+  migration header).
+  - `proposal_decision` (FR-REV-05, FR-REV-07, AC-04) — the sender's single
+    review outcome per proposal: `decision` ACCEPTED|REJECTED, `decided_by`
+    person FK RESTRICT, verbatim `decided_at`, optional never-blank `note`
+    (the sender's comment made with the decision). `UNIQUE (proposal_id)` is
+    the schema side of "one decision per proposal" — the table records the
+    current outcome; who may decide is service-level (FR-REV-09). The live
+    review state (PENDING/EDITED included) stays on `proposal.review_state`
+    (0005).
+  - `proposal_assignee` (FR-PRP-10) — each assignee exactly as written in the
+    proposal text plus the backend's resolution state: RESOLVED carries the
+    resolved person FK and the route MENTION|NAME_MATCH; UNRESOLVED (several
+    plausible matches) and FLAGGED (no match) carry neither — the CHECK makes
+    an implicit guess unrepresentable. Human confirmation happens at review
+    (FR-REV-01/06, service level). Proposal-scoped by design: the proposal's
+    current text is what is resolved, and each revision already snapshots its
+    values (0005).
+  - `message_mention` (FR-ING-02, EIR-03) — mentions as opaque Discord user
+    IDs only, never resolved roster identity; `position` optional (NULL or
+    ≥ 0); no UNIQUE, so a repeated mention of the same user in one message is
+    two rows of preserved evidence (DR-03); source_message FK RESTRICT.
+  - All FKs RESTRICT (DR-01/DR-02/DR-04); no additional indexes.
+- Deliberately not in the schema (service-level, per the migration header):
+  decision authorization (the sender-only reviewer, FR-REV-09), decision
+  history itself (owner decision 2026-10-20: latest decision only, no
+  history requirement — see §7), that REJECTED proposals are never
+  converted into tasks
+  (the FR-REV-05 XOR, service level plus the 0006/0009 UNIQUE keys), how
+  assignees are resolved, and mention-extraction timing.
+- Dependencies: 2.2 (person), 2.3 (source_message), 2.6 (proposal).
+- Tests (delivered, 19 cases from 18 functions; the decision-token test is
+  parametrized ×2): migrations — tables created in the default manifest,
+  reapplication idempotent with versions 1–12; decision — both tokens
+  recordable, unknown token rejected, second decision for the same proposal
+  rejected (`UNIQUE`; the docstring records the owner decision that a later
+  permitted decision overwrites the row — latest decision only, no history),
+  decider must be a known person, proposal and person deletion both RESTRICT
+  a stored decision, note optional and never blank (whitespace rejected);
+  assignees — all three resolution states recordable, RESOLVED without
+  person/route rejected, FLAGGED/UNRESOLVED with person or route rejected,
+  invalid route token rejected, unknown person rejected; mentions — stored
+  with optional position, duplicate mention of the same user preserved as
+  two rows (DR-03), blank ID rejected, unknown message rejected; AC-02
+  restated — a task and an announcement proposal from the same primary
+  message in one generation run, both stored independently, and the workload
+  ends `PRAGMA foreign_key_check` clean. Standing probe recorded separately
+  by `tests/test_migrations_fk_check.py`: a fresh database migrated through
+  version 11 (every Phase 2 data-layer table, before the A4 additions) has
+  zero `PRAGMA foreign_key_check` violations, with `0008` untouched (see the
+  Slice 2.9 ordering note).
+- Acceptance: recording-shape aspects of AC-04 (a reject stores its decision)
+  and AC-02. Ownership/authorization, assignee-resolution execution,
+  mention-extraction timing, review flows, accept/reject execution and any
+  notification are **not** implemented and are not claimed by this slice.
+
 ## 4. Migration numbering (derived from the repository, verified)
 
 | Version | File | Slice | Status |
@@ -505,14 +567,15 @@ SRS-verbatim and explicitly approved by the project owner at that slice's planni
 | 1 | `0001_core_roster.sql` | 2.2 | committed |
 | 2 | `0002_source_messages.sql` | 2.3 | committed |
 | 3 | `0003_buckets.sql` | 2.4 (+2.4.1 correction) | committed (HEAD `855ebb7`) |
-| 4 | `0004_processing_attempts.sql` | 2.5 | implemented (storage/schema + tests, uncommitted) |
-| 5 | `0005_proposals.sql` | 2.6 | implemented (storage/schema + tests, uncommitted) |
-| 6 | `0006_tasks.sql` | 2.7 | implemented (storage/schema + tests, uncommitted) |
-| 7 | `0007_cross_vertical_approvals.sql` | 2.8 | implemented (storage/schema + tests, uncommitted) |
-| 8 | `0008_notifications.sql` | 2.9 | implemented (storage/schema + tests, uncommitted) |
-| 9 | `0009_announcements.sql` | 2.10 | implemented (storage/schema + tests, uncommitted) |
-| 10 | `0010_source_group_progress.sql` | bucket-formation slice (Revision 4) | implemented (schema + service + tests, uncommitted) |
-| 11 | `0011_latency_measurements.sql` | 2.11 | implemented (storage/schema + tests, uncommitted) |
+| 4 | `0004_processing_attempts.sql` | 2.5 | committed at `4e4aae2` |
+| 5 | `0005_proposals.sql` | 2.6 | committed at `4e4aae2` |
+| 6 | `0006_tasks.sql` | 2.7 | committed at `4e4aae2` |
+| 7 | `0007_cross_vertical_approvals.sql` | 2.8 | committed at `4e4aae2` |
+| 8 | `0008_notifications.sql` | 2.9 | committed at `4e4aae2` |
+| 9 | `0009_announcements.sql` | 2.10 | committed at `4e4aae2` |
+| 10 | `0010_source_group_progress.sql` | bucket-formation slice (Revision 4) | committed at `4e4aae2` |
+| 11 | `0011_latency_measurements.sql` | 2.11 | committed at `4e4aae2` |
+| 12 | `0012_resolution_and_mentions.sql` | A4 correction slice (owner-directed) | implemented (schema + tests, uncommitted) |
 
 Rules: strictly increasing, one logical group per migration, never edit a committed
 migration (checksums enforce); later discoveries that would require editing a committed
@@ -554,12 +617,19 @@ instructions.
 
 | Requirement | State | Blocks |
 | --- | --- | --- |
-| **FR-BKT-04**, **FR-BKT-05** | bodies now filled (SRS lines 222, 224, owner-approved restorations in the working tree). **Implemented 2026-10-19** in `backend/bucketing.py` with the approved Revision 4 semantics: strict FR-BKT-04 inequalities; `e = min(s + M, max(s + W, l + G))` (FR-BKT-05); closure only via accepted per-group event-time progress, `e + C <= P` inclusive; assignment never closes buckets or advances progress; late-message and predecessor-graph rules per Revision 4 | closed for this slice; see bucket-formation slice report for pending SRS amendments (progress authority, recovery-link fallback, cross-call order sensitivity) |
-| **FR-TSK-06**, **FR-TSK-13** | **resolved 2026-10-19** — bodies restored verbatim per the original SRS DOCX (owner-verified outside this repository; `docs/SRS.md` lines 348, 362) | none (Slices 2.7–2.9 implemented against the restored texts) |
-| **§6.4 performance targets** | 4 target cells blank (lines 608–611: message→proposal P95, classifier P95, proposal P95, availability) | **recording half resolved 2026-10-19** — the NFR-PERF-02 records shape is implemented (`0011_latency_measurements.sql`, Slice 2.11; raw measurement rows that support later P50/P95/P99 computation). The blank target cells themselves remain owner decisions; they block benchmark evaluation/acceptance (NFR-PERF-01/03) and production tuning, not recording |
-| **§7 AI targets** | target cells **blank at lines 670–675** (four blank targets: relevance precision; proposal type/assignment mode; assignee/task type; proposal acceptance overall — plus one blank *measure* cell in the same block); exception: "Description quality" is already supplied as **"Human-rated, no percentage"** (line 675) | evaluation tooling and acceptance by §10.3 "AI targets met" |
-| **§3.2 vs §10.1 bucketing parameters** | **partially resolved by Revision 4 (engineering lead, 2026-10-19), owner ratification still pending** — the bucket-formation slice implements and tests the §10.1 values (W=10, G=5, M=30, C=3) recorded per-bucket in `bucket.parameters_used`; the §3.2 table (W=15, C=2, SRS lines 209–214) still conflicts and requires the project owner's amendment before production tuning (pending amendment P6) | owner amendment for §3.2; production parameter tuning |
+| **FR-BKT-04**, **FR-BKT-05** | bodies now filled (§3.2, owner-approved restorations). **Implemented 2026-10-19** in `backend/bucketing.py` with the approved Revision 4 semantics: strict FR-BKT-04 inequalities; `e = min(s + M, max(s + W, l + G))` (FR-BKT-05); closure only via accepted per-group event-time progress, `e + C <= P` inclusive; assignment never closes buckets or advances progress; late-message and predecessor-graph rules per Revision 4 | closed for this slice; see bucket-formation slice report for pending SRS amendments (progress authority, recovery-link fallback, cross-call order sensitivity) |
+| **FR-TSK-06**, **FR-TSK-13** | **resolved 2026-10-19** — bodies restored verbatim per the original SRS DOCX (owner-verified outside this repository; now §3.6) | none (Slices 2.7–2.9 implemented against the restored texts) |
 | Deferred 2.3/2.4-era decisions | role vocabulary, unknown-channel ingestion policy, post-recovery UNCLASSIFIED clearing, `parameters_used` scope | future slices owning those behaviors |
+| **`proposal_decision` outcome history (0012)** | **Owner decision recorded 2026-10-20 (documentation only — no schema, code, or test change).** Store **only the latest review decision per proposal**; do not preserve a history of earlier decisions. Already supported by the existing schema, nothing to build: `0012_resolution_and_mentions.sql` admits at most one `proposal_decision` row per proposal (`UNIQUE (proposal_id)`), and the table carries no append-only constraint or trigger, so a changed decision is recorded by updating the existing row (service-level discipline). The proposal and its review decision remain **separate records** (`proposal` in 0005 holds content; `proposal_decision` in 0012 holds the outcome); recording a decision must not silently modify the proposal's content — content changes stay in the separate edit path (FR-REV-03, FR-REV-04: each edit its own revision, edit is not accept). **Status consistency:** when a decision is recorded, the service must bring `proposal.review_state` (0005: FR-REV-01 vocabulary PENDING/EDITED/ACCEPTED/REJECTED, NOT NULL, CHECK-enforced, default PENDING, mutable column) into the SRS-supported state matching that decision — the outcome tokens ACCEPTED/REJECTED are FR-REV-01 states and the accept/reject semantics are FR-REV-05/FR-REV-07 text. The decision write and the matching `review_state` update must be **atomic** (one transaction) when the review workflow is implemented, using the established single-connection `transaction()` pattern (NFR-CON-02 discipline). No new fields, statuses, transitions, or migration are authorized or required by this decision | A4-era review service slice (implements the flow; atomicity requirement recorded here) |
+| **Review-state transition edges (Figure 6)** | **Unresolved — resolved only by the SRS DOCX.** FR-REV-01 fixes the status vocabulary and concrete outcomes in text, but the complete legal transition set (which edges exist, including into/out of EDITED, and whether ACCEPTED or REJECTED can ever move again) appears only in the review-states diagram; the Markdown SRS carries it solely as an image placeholder ("Figure 6 — Proposal review states", section 3.5). Per AGENTS.md the SRS v2.0 DOCX is the visual source for diagrams. The exact edges to enforce must be read from Figure 6 at the review service slice's planning step; they are not invented here | none (blocks transition-enforcement tests in the review service slice) |
+| **Changed decision after accept-side effects** | **Unresolved — SRS is silent; do not guess.** Latest-decision storage means a recorded decision can be overwritten by a later one. If an ACCEPTED decision has already produced its task or announcement (FR-REV-05/FR-REV-10) and a new decision is then recorded, the SRS defines no reconciliation: there is no un-accept flow, and FR-REV-05's single-object guarantees plus FR-REV-07's record-retention wording do not describe reversal. Whether a re-decision may target a decided-and-accepted proposal at all (versus only undecided/edited ones), and what happens to already-created records, must be defined by the owner at the review service slice's planning step. Schema impact of the storage decision itself: none | none (service-slice design question; would need a new migration only if the owner later requires new records) |
+
+Note on parameter sets: §3.2 fixes the production set (W=15, G=5, M=30, C=2) and §10.1
+declares its own test parameter set (W=10, G=5, M=30, C=3). These are different roles
+(test matrix vs production defaults), not a conflict; the former §3.2-vs-§10.1
+"conflict / owner amendment P6" item is removed accordingly, and the §6.4 and §7
+target cells are filled in the SRS, so their former "blank owner decisions" items are
+removed as well.
 
 ## 8. Later-phase boundary (not delivered by Phase 2)
 
@@ -571,15 +641,15 @@ owner approval; the original requirement texts are preserved. Review fix M1 is a
 fail loudly).
 
 Latency instrumentation: the NFR-PERF-02 *recording* shape is Phase 2 (Slice 2.11,
-migration `0011`). Scope boundary, grounded in the SRS: NFR-PERF-02 (line 615) requires
+migration `0011`). Scope boundary, grounded in the SRS: NFR-PERF-02 (§6.4) requires
 the system to record the five named latency kinds "as P50, P95 and P99" — the recordable
 atomic data is one row per raw measurement, and the percentile form is how those
-recordings are reported. DR-03 (line 529: derived data never replaces source content) and
-DR-06 (line 535: any derived store shall hold references to authoritative records and be
+recordings are reported. DR-03 (§4.2: derived data never replaces source content) and
+DR-06 (§4.2: any derived store shall hold references to authoritative records and be
 rebuildable from them) make the raw measurement rows the authoritative record; stored
 percentile snapshots would be derived data with no SRS requirement anywhere to persist
 them. Computing percentiles, deriving each metric from source timestamps, and
-benchmarking against the §6.4 targets (NFR-PERF-01 line 613, NFR-PERF-03; the §10.3
+benchmarking against the §6.4 targets (NFR-PERF-01, NFR-PERF-03; the §10.3
 "A latency benchmark is recorded" milestone) are later-phase work. The `metric` column
 carries free-text labels because the SRS names the five kinds in prose, not as token
 constants, and the established D1 rule forbids adding a vocabulary-enumerating CHECK

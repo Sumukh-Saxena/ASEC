@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -26,14 +27,32 @@ import pytest
 from backend.bucketing import (
     AssignmentResult,
     BucketParams,
+    BucketParamsError,
     SkipReason,
     assign_messages,
+    load_bucket_params,
     mark_stream_progress,
 )
+from backend.config import Config
 from backend.db.connection import connect
 from backend.db.migrations import apply_migrations
 
 _BASE = datetime(2026, 1, 1, tzinfo=UTC)
+
+# SRS §10.1 declares its own test parameter set (W=10, G=5, M=30, C=3). The
+# service's BucketParams() defaults are the §3.2 production set (W=15, G=5,
+# M=30, C=2). Every §10.1-scoped test pins the §10.1 values explicitly via the
+# _assign helper; tests of the production defaults call assign_messages
+# directly without params.
+_PARAMS_101 = BucketParams(10, 5, 30, 3)
+
+# Configuration keys accepted by load_bucket_params (documented in .env.example).
+_BUCKET_CONFIG_KEYS = (
+    "BUCKET_WINDOW_W_S",
+    "BUCKET_BURST_GAP_G_S",
+    "BUCKET_MAX_DURATION_M_S",
+    "BUCKET_CLOSE_GRACE_C_S",
+)
 
 
 def _iso(seconds: int) -> str:
@@ -83,7 +102,7 @@ def _message(
 def _assign(
     connection: sqlite3.Connection,
     group_id: int | None = None,
-    params: BucketParams | None = None,
+    params: BucketParams = _PARAMS_101,
 ) -> AssignmentResult:
     return assign_messages(connection, group_id=group_id, params=params)
 
@@ -347,7 +366,7 @@ def test_closure_uses_bucket_persisted_params(conn: sqlite3.Connection) -> None:
 
     _group(conn)
     _message(conn, 1, 5)
-    _assign(conn, params=BucketParams(window_w=20))  # bucket A: e = 5+20 = 25
+    _assign(conn, params=BucketParams(window_w=20, close_grace_c=3))  # bucket A: e = 5+20 = 25
     _message(conn, 2, 0)  # earlier than A's start -> late; born L(0) OPEN, e = 10
     _assign(conn)
     buckets = _buckets(conn)
@@ -745,7 +764,7 @@ def test_custom_params(conn: sqlite3.Connection) -> None:
     _group(conn)
     _message(conn, 1, 0)
     _message(conn, 2, 10)
-    _assign(conn, params=BucketParams(window_w=15))
+    _assign(conn, params=BucketParams(window_w=15, close_grace_c=3))
     assert len(_buckets(conn)) == 1  # 10 < 15 joins with the widened window
 
 
@@ -816,8 +835,10 @@ def test_injected_failure_mid_transaction_rolls_back(
     _message(conn, 2, 12)
     conn.execute("UPDATE source_message SET event_timestamp = ? WHERE id = 1", (_iso(0),))
     proxy = _FailProxy(conn, "INSERT INTO bucket (", 2)
+    # 0 and 12 form two buckets under the §10.1 parameter set; the failure is
+    # injected on the second bucket insert.
     with pytest.raises(sqlite3.IntegrityError):
-        assign_messages(proxy, group_id=1)
+        assign_messages(proxy, group_id=1, params=_PARAMS_101)
     # nothing committed: no buckets, no memberships, no flags, no progress
     assert _buckets(conn) == []
     assert _composition(conn) == []
@@ -890,3 +911,83 @@ def test_progress_and_assignment_concurrent_group_isolation(
     assert _state(conn, 2) == "CLOSED"  # inclusive e + C <= P closure stands
     assert _state(conn, 1) == "OPEN"  # group 1's bucket unaffected throughout
     _fk_clean(conn)
+
+
+# --- SRS §3.2 production defaults and configuration (FR-BKT §3.2, NFR-MNT-01) ---
+
+
+def test_bucket_params_defaults_are_srs_31() -> None:
+    """§3.2: W=15, G=5, M=30, C=2 (production), not the §10.1 test set."""
+    params = BucketParams()
+    assert params.window_w == 15
+    assert params.burst_gap_g == 5
+    assert params.max_duration_m == 30
+    assert params.close_grace_c == 2
+    import json
+
+    assert json.loads(params.as_json()) == {
+        "window_w": 15,
+        "burst_gap_g": 5,
+        "max_duration_m": 30,
+        "close_grace_c": 2,
+    }
+
+
+def test_production_defaults_single_message_at_0_closes_at_17(
+    conn: sqlite3.Connection,
+) -> None:
+    """§3.2 defaults: single message at 0 -> end 15, closes at 17 (inclusive)."""
+    _group(conn)
+    _message(conn, 1, 0)
+    result = assign_messages(conn, group_id=1)  # real §3.2 defaults
+    assert result.skipped == ()
+    # For a normal bucket the computed end is written only at closure
+    # (FR-BKT-05); assignment does not store it.
+    assert _end(conn, 1) is None
+    mark_stream_progress(conn, group_id=1, event_progress=_iso(16))
+    assert _state(conn, 1) == "OPEN"  # 15 + 2 = 17 > 16
+    closed = mark_stream_progress(conn, group_id=1, event_progress=_iso(17))
+    assert _state(conn, 1) == "CLOSED"  # 17 <= 17 inclusive
+    assert _end(conn, 1) == _iso(15)
+    assert closed.closed_bucket_ids == (1,)
+    _fk_clean(conn)
+
+
+def test_load_bucket_params_defaults_when_unset() -> None:
+    assert load_bucket_params(Config({})) == BucketParams(15, 5, 30, 2)
+
+
+def test_load_bucket_params_reads_overrides() -> None:
+    config = Config(
+        {
+            "BUCKET_WINDOW_W_S": "20",
+            "BUCKET_BURST_GAP_G_S": "7",
+            "BUCKET_MAX_DURATION_M_S": "60",
+            "BUCKET_CLOSE_GRACE_C_S": "4",
+        }
+    )
+    assert load_bucket_params(config) == BucketParams(20, 7, 60, 4)
+
+
+def test_load_bucket_params_partial_overrides_keep_defaults() -> None:
+    config = Config({"BUCKET_CLOSE_GRACE_C_S": "9"})
+    assert load_bucket_params(config) == BucketParams(15, 5, 30, 9)
+
+
+def test_load_bucket_params_blank_counts_as_unset() -> None:
+    config = Config({"BUCKET_WINDOW_W_S": "   "})
+    assert load_bucket_params(config) == BucketParams(15, 5, 30, 2)
+
+
+@pytest.mark.parametrize("raw", ["abc", "3.5", "0", "-2", "15;20"])
+def test_load_bucket_params_invalid_values_fail_loudly(raw: str) -> None:
+    config = Config({"BUCKET_WINDOW_W_S": raw})
+    with pytest.raises(BucketParamsError):
+        load_bucket_params(config)
+
+
+def test_bucket_config_keys_documented_in_env_example() -> None:
+    env_example = Path(__file__).resolve().parents[1] / ".env.example"
+    text = env_example.read_text(encoding="utf-8")
+    for key in _BUCKET_CONFIG_KEYS:
+        assert key in text, f"{key} must be documented in .env.example"

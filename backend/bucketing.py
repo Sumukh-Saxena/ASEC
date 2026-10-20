@@ -48,9 +48,55 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from backend.config import Config
 from backend.db.connection import transaction
 
 TRACKING_GROUP_KEY = "group_id"
+
+# SRS §3.2 production defaults: base window 15 s, burst gap 5 s, maximum
+# duration 30 s, close grace 2 s.
+DEFAULT_BUCKET_WINDOW_W = 15
+DEFAULT_BUCKET_BURST_GAP_G = 5
+DEFAULT_BUCKET_MAX_DURATION_M = 30
+DEFAULT_BUCKET_CLOSE_GRACE_C = 2
+
+# Configuration keys read by load_bucket_params (NFR-MNT-01). Only the bucket
+# parameters are read here; unset or blank values fall back to the §3.2
+# production defaults. Also documented in `.env.example`.
+_BUCKET_CONFIG_KEYS: tuple[tuple[str, str], ...] = (
+    ("window_w", "BUCKET_WINDOW_W_S"),
+    ("burst_gap_g", "BUCKET_BURST_GAP_G_S"),
+    ("max_duration_m", "BUCKET_MAX_DURATION_M_S"),
+    ("close_grace_c", "BUCKET_CLOSE_GRACE_C_S"),
+)
+
+
+def load_bucket_params(config: Config) -> BucketParams:
+    """Build :class:`BucketParams` from optional configuration overrides.
+
+    Reads ``BUCKET_WINDOW_W_S``, ``BUCKET_BURST_GAP_G_S``,
+    ``BUCKET_MAX_DURATION_M_S`` and ``BUCKET_CLOSE_GRACE_C_S`` (positive
+    integers, seconds) out of the given :class:`~backend.config.Config`.
+    Absent or blank values keep the §3.2 production default; any value that is
+    not a positive integer raises :class:`BucketParamsError` (invalid
+    configuration fails loudly, it is never silently clamped).
+    """
+    overrides: dict[str, int] = {}
+    for field, key in _BUCKET_CONFIG_KEYS:
+        raw = config.get(key)
+        if raw is None or raw.strip() == "":
+            continue
+        try:
+            value = int(raw.strip())
+        except ValueError as error:
+            raise BucketParamsError(
+                f"{key} must be a positive integer, got {raw!r}"
+            ) from error
+        overrides[field] = value
+    try:
+        return BucketParams(**overrides)
+    except BucketParamsError as error:
+        raise BucketParamsError(str(error)) from error
 
 
 class BucketParamsError(ValueError):
@@ -59,12 +105,18 @@ class BucketParamsError(ValueError):
 
 @dataclass(frozen=True)
 class BucketParams:
-    """SRS §3.2 parameters (seconds). Defaults are the approved production set."""
+    """SRS §3.2 parameters (seconds).
 
-    window_w: int = 10
-    burst_gap_g: int = 5
-    max_duration_m: int = 30
-    close_grace_c: int = 3
+    Defaults are the §3.2 production set (W=15, G=5, M=30, C=2). SRS §10.1
+    separately declares its own test parameter set (W=10, G=5, M=30, C=3);
+    tests exercising it pass those values explicitly. Optional overrides come
+    from :func:`load_bucket_params` (NFR-MNT-01: parameters are configuration).
+    """
+
+    window_w: int = DEFAULT_BUCKET_WINDOW_W
+    burst_gap_g: int = DEFAULT_BUCKET_BURST_GAP_G
+    max_duration_m: int = DEFAULT_BUCKET_MAX_DURATION_M
+    close_grace_c: int = DEFAULT_BUCKET_CLOSE_GRACE_C
 
     def __post_init__(self) -> None:
         for name in ("window_w", "burst_gap_g", "max_duration_m", "close_grace_c"):
