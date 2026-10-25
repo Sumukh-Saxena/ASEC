@@ -30,8 +30,8 @@ implementation.
   G1b `PROPOSAL_REQUIRE_SOURCE_VERTICAL_MEMBERSHIP` flag (default **off**,
   schema/code/tests in both settings, owner may flip the default later);
   C1 opaque mention handles approved **for the proposal stage only** (the
-  relevance/0013 retrofit is a plan-only owner-approval item); D1–D7 are
-  plan-only (§15) until the owner writes `APPROVED D<n>`.
+  relevance/0013 retrofit is a plan-only owner-approval item); PB-1–PB-7 are
+  plan-only (§15) until the owner writes `APPROVED PB-<n>`.
 - Plans in repo: `docs/PHASE2_PLAN.md` (Carries the phase records for Phases
   2–4 in its §3 slices and §10–§13 records). `docs/PHASE5_PLAN.md` (this file).
 - `/slice` has no separate command file in the repo; the prescribed format is
@@ -86,7 +86,7 @@ Phase 5 implements the **executable proposal-generation stage**:
 **Explicit non-goals (standing boundaries; do not implement in Phase 5):**
 
 1. The **proposal-review service** (FR-REV-01..10 execution, edit/accept/
-   reject endpoints), **Part B D1–D7** — their specifications do not exist in
+   reject endpoints), **Part B PB-1–PB-7** — their specifications do not exist in
    the repository and require owner-supplied specs and explicit approval
    (owner gate G2).
 2. **Notification emission or delivery** (FR-PRP-17, FR-NOT-01..07): the
@@ -500,7 +500,7 @@ NFR-PERF-03 production load benchmark (live data — G5), SRS checks 7–8
   `integrity_check` ok, `foreign_key_check` empty, self-cleaning).
 - **Acceptance criteria (phase)**: all §6 rows with planned tests go green;
   AC-02/03/10/11/21 pins + AC-12 proposal half pass; NFR-AUD-02 artifact
-  guarantees hold; battery ≥ previous total (`755` + ~83) with 0/0/0;
+  guarantees hold; battery ≥ previous total (`755` + 122 = 877) with 0/0/0;
   ruff/mypy/`python -m backend --version` = `0.0.1`; `git diff --check`
   clean; FK probe green.
 
@@ -558,9 +558,9 @@ Commands per workstream (and the phase battery):
   `PROPOSAL_REQUIRE_SOURCE_VERTICAL_MEMBERSHIP` (default **off**) gates an
   optional source-vertical membership requirement on top — tests cover both
   settings. Only the owner may flip the default.
-- **G2 — Part B D1–D7:** specified in §15 of this document (owner-supplied
+- **G2 — Part B PB-1–PB-7:** specified in §15 of this document (owner-supplied
   statement of work, 2026-10-22). Phase 5 **excludes implementing** them;
-  each becomes implementable only after the owner writes `APPROVED D<n>`
+  each becomes implementable only after the owner writes `APPROVED PB-<n>`
   in `docs/PHASE5_PLAN.md` (the owner edits the SRS separately — this plan
   never touches `docs/SRS.md`).
 - **G3 — Deployed proposal model + prompt/config version registry**
@@ -637,13 +637,15 @@ individually vetoable without disturbing the rest):
 - **DC-12 (C1)** Two canonical serializations of one request: the
   dispatch form (no handle map — what the model sees,
   `request_sha256` covers this) and the artifact form (dispatch JSON +
-  `mention_handle_map` member — what audit stores).
-- **DC-13 (C2)** `raw_response` mask + size cap: the same mechanism as
-  attempt error redaction (`mask_pii` first, a cap constant of **500**
-  chars shared with `MAX_ATTEMPT_ERROR_LENGTH` semantics, capped text
-  marked with a `…` suffix); `response_sha256` is always over the exact
-  stored (masked, capped) text; a failed attempt still stores its
-  response when the adapter returned one.
+  `mention_handle_map` member — what audit stores). The generator receives
+  the model-facing request only (`ProposalGenerationRequest`); the handle map
+  lives in backend `ProposalRequestContext`.
+- **DC-13 (C2)** `raw_response` mask + size cap: the cap is 65536 bytes
+  (`MAX_RAW_RESPONSE_BYTES`) with `raw_response_truncated` flag; the
+  500-character figure applies to attempt error text only (`MAX_ATTEMPT_ERROR_LENGTH`)
+  and is superseded for `raw_response`. Capped text is marked with a `…` suffix;
+  `response_sha256` is always over the exact stored (masked, capped) text; a failed
+  attempt still stores its response when the adapter returned one.
 - **DC-14 (C5)** `PROPOSAL_STAGE_DELAY` anchored at the latest SUCCEEDED
   relevance attempt's `finished_at` (not at bucket close — close wall
   time is not persisted by 0003); honest skip when no parseable anchor;
@@ -653,6 +655,24 @@ individually vetoable without disturbing the rest):
 - **DC-16** Distinguishability discipline (DR-04): NULL = missing;
   blank/trimmed-empty strings are never coerced to NULL — they are
   `FIELD_VALUE_INVALID` (Tier-2) for storable fields.
+- **DC-17** Malformed proposal response fallback: when canonical JSON
+  serialization fails (e.g. non-envelope or malformed items),
+  `_raw_response_text` degrades to `repr(response)`, guaranteed to be
+  PII-masked and capped at 65536 bytes.
+- **DC-18** Discord markup rewriting and fresh handles for unmatched users:
+  role mentions `<@&ID>` rewritten to `@role`, channel mentions `<#ID>` rewritten
+  to `#channel`, custom emoji `<:name:ID>` and animated `<a:name:ID>` rewritten to
+  `:name:`. Unmatched user mentions `<@ID>` receive fresh opaque handles (`@m1`,
+  `@m2`, ...) allocated deterministically so Discord snowflakes never reach the generator.
+- **DC-19** `reply_reference` resolved to internal id or null: resolved to internal
+  `source_message.id` if referenced message is within the same bucket; external or
+  unresolved reply references resolve to `None` (`null` in JSON), preventing external
+  snowflakes from reaching the generator.
+- **DC-20** 64 KB cap, truncation flag, hash over the full masked text:
+  `raw_response` cap of 64 KB (65,536 bytes; `MAX_RAW_RESPONSE_BYTES`),
+  `raw_response_truncated` column in `proposal_attempt_input`, with `response_sha256`
+  computed over the full masked text before truncation to preserve audit integrity.
+  The 500-character figure applies strictly to attempt error text (`MAX_ATTEMPT_ERROR_LENGTH`).
 - **C6 pins (owner-judged, vetoable):** DC-3 (all-invalid ⇒ failed
   attempt) and DC-6 (exact trimmed+casefold name equality; name matching
   restricted to the source vertical — cross-vertical names FLAGGED) are
@@ -675,16 +695,16 @@ individually vetoable without disturbing the rest):
 
 **Completed & Stabilized (2026-10-23):**
 - **Files delivered / modified:**
-  - `backend/db/migrations/0014_proposal_attempt_input.sql`: additive migration for proposal attempt input retention (`proposal_attempt_input` table with SHA-256 hashes, masked `request_artifact_json`, masked/capped `raw_response`, `rejected_items`, `captured_at`).
+  - `backend/db/migrations/0014_proposal_attempt_input.sql`: additive migration for proposal attempt input retention (`proposal_attempt_input` table with SHA-256 hashes, masked `request_artifact_json`, masked/capped `raw_response`, `raw_response_truncated`, `rejected_items`, `captured_at`).
   - `backend/proposals.py`: proposal generation stage types, policy configuration (G1/G1b), request serialization (dispatch vs artifact), validation tiers (Tiers 1, 2, 3), reason codes, resolution (MENTION and source-vertical NAME_MATCH), transactional attempt persistence, `proposal_backlog` (C4), and pass orchestration.
-  - `tests/test_migrations_proposal_attempt_input.py`: 13 migration tests covering schema, foreign keys, triggers, and idempotency.
-  - `tests/test_proposal_service.py`: 97 service tests covering all functional requirements, edge cases, error conditions, and C1–C6 corrections.
+  - `tests/test_migrations_proposal_attempt_input.py`: 14 migration tests covering schema, foreign keys, triggers, and idempotency.
+  - `tests/test_proposal_service.py`: 108 service tests covering all functional requirements, edge cases, error conditions, C1–C6 corrections, and pinned markup rewrites.
   - `tests/test_migrations_resolution.py`: updated expected total migration count to 14 (`range(1, 15)`).
   - `.gitignore`: ignored `.tmp_*.xml`.
 - **Observed verification results (real runs, no skips, no failures):**
-  - Full repo test suite: **865 passed / 0 failed / 0 skipped** in ~65s.
-  - `tests/test_proposal_service.py`: 97 passed.
-  - `tests/test_migrations_proposal_attempt_input.py`: 13 passed.
+  - Full repo test suite: **877 passed / 0 failed / 0 skipped** in ~80s (baseline: 755; 122 Phase 5 additions).
+  - `tests/test_proposal_service.py`: 108 passed.
+  - `tests/test_migrations_proposal_attempt_input.py`: 14 passed.
   - `tests/test_migrations_resolution.py`: 19 passed.
   - `ruff check .`: **All checks passed!**
   - `mypy`: **Success: no issues found in 13 source files**.
@@ -694,12 +714,15 @@ individually vetoable without disturbing the rest):
 
 **Decisions recorded & refined (DC-11 onward):**
 - **DC-11 (C1)** Opaque mention handles for the proposal stage: handle assignment `@m1…` in first-appearance order over bucket members by ascending message id, per-message mentions in `message_mention` position order; handles ride the request; handle map rides the artifact form only.
-- **DC-12 (C1)** Two canonical serializations: dispatch form (no handle map — model input) and artifact form (dispatch JSON + `mention_handle_map` member — audit storage).
-- **DC-13 (C2)** `raw_response` mask + size cap: `mask_pii` first, cap constant of 500 chars shared with `MAX_ATTEMPT_ERROR_LENGTH` semantics, capped text suffixed with `...`; `response_sha256` over exact stored text.
+- **DC-12 (C1)** The generator receives the model-facing request only (`ProposalGenerationRequest`); the handle map lives in `ProposalRequestContext`. Two canonical serializations: dispatch form (no handle map — model input) and artifact form (dispatch JSON + `mention_handle_map` member — audit storage).
+- **DC-13 (C2)** `raw_response` cap is 65536 bytes (`MAX_RAW_RESPONSE_BYTES`) with `raw_response_truncated` flag; the 500-character figure applies to attempt error text only (`MAX_ATTEMPT_ERROR_LENGTH`) and is superseded for `raw_response`. Capped text suffixed with `...`; `response_sha256` over full masked text.
 - **DC-14 (C5)** `PROPOSAL_STAGE_DELAY` anchored at latest SUCCEEDED relevance attempt's `finished_at` (`ORDER BY id DESC LIMIT 1`); honest skip when no parseable anchor exists.
 - **DC-15** MENTION route requires no `active` flag; mapped ID without a roster person flags as `FLAGGED`.
 - **DC-16** Distinguishability discipline (DR-04): NULL = missing; blank/trimmed-empty string = `FIELD_VALUE_INVALID` (Tier-2).
-- **DC-17** Malformed proposal response fallback: when canonical JSON serialization fails (e.g. non-envelope or malformed items), `_raw_response_text` degrades to `repr(response)`, guaranteed to be PII-masked and length-capped at 500 characters.
+- **DC-17** Malformed proposal response fallback: when canonical JSON serialization fails (e.g. non-envelope or malformed items), `_raw_response_text` degrades to `repr(response)`, guaranteed to be PII-masked and capped at 65536 bytes.
+- **DC-18** Markup rewriting and fresh handles for unmatched users: `<@&ID>` -> `@role`, `<#ID>` -> `#channel`, `<:name:ID>` / `<a:name:ID>` -> `:name:`; unmatched `<@ID>` get fresh opaque handles deterministically so snowflakes never reach the generator.
+- **DC-19** `reply_reference` resolved to internal id (if in-bucket) or null (if external/unresolved).
+- **DC-20** 64 KB cap (65,536 bytes), truncation flag (`raw_response_truncated`), and hash over the full masked text before truncation.
 - **Test-expectation triage & corrections:**
   - `test_partial_invalid_keeps_valid_sibling_independent`: asserted `MODE_INVALID` for `_draft(..., assignment_mode="NONE")` on TASK (FR-PRP-08, 0005 check).
   - `test_open_task_count_encodings_store`: passed bucket candidate message ID `con_mid`.

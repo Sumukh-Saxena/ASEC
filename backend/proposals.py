@@ -69,7 +69,6 @@ __all__ = [
     "DEFAULT_ELIGIBLE_ROLE_TOKENS",
     "LATENCY_METRIC_LABEL",
     "MAX_RAW_RESPONSE_BYTES",
-    "MAX_RAW_RESPONSE_LENGTH",
     "PROPOSAL_PROMPT",
     "PROPOSAL_PROMPT_VERSION",
     "ProposalBacklog",
@@ -105,7 +104,6 @@ STAGE_DELAY_METRIC_LABEL = "PROPOSAL_STAGE_DELAY"
 PROPOSAL_PROMPT_VERSION = "proposal-prompt-v1"
 DEFAULT_ELIGIBLE_ROLE_TOKENS = ("AH", "Head")
 MAX_ATTEMPT_ERROR_LENGTH = 500  # Attempt error text stays 500 chars (DC-20)
-MAX_RAW_RESPONSE_LENGTH = 500  # Superseded by MAX_RAW_RESPONSE_BYTES for raw_response; kept for compat
 MAX_RAW_RESPONSE_BYTES = 65536  # C2/DC-20 cap for raw_response only
 
 # Documented Tier-2 reason codes (internal audit annotation; not SRS state

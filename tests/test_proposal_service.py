@@ -2884,7 +2884,9 @@ def test_raw_response_fallback_pii_masked(conn: sqlite3.Connection) -> None:
 
 
 def test_raw_response_fallback_oversize_capped(conn: sqlite3.Connection) -> None:
-    """Over-size fallback repr() text (> MAX_RAW_RESPONSE_BYTES) is truncated on a character boundary."""
+    """Over-size fallback repr() text (> MAX_RAW_RESPONSE_BYTES) is truncated on a
+    character boundary.
+    """
     bucket_id, _person_id, (mid,) = _expected_scenario(conn, message_count=1)
 
     class HugeEnvelope:
@@ -2902,3 +2904,131 @@ def test_raw_response_fallback_oversize_capped(conn: sqlite3.Connection) -> None
     full_masked = proposals.mask_pii(repr(HugeEnvelope()))
     assert str(row["response_sha256"]) == proposals._hash_text(full_masked)
 
+
+def _all_strings_from_obj(val: object) -> list[str]:
+    if isinstance(val, str):
+        return [val]
+    if isinstance(val, dict):
+        res: list[str] = []
+        for k, v in val.items():
+            res.extend(_all_strings_from_obj(k))
+            res.extend(_all_strings_from_obj(v))
+        return res
+    if isinstance(val, (list, tuple, set)):
+        res = []
+        for item in val:
+            res.extend(_all_strings_from_obj(item))
+        return res
+    return []
+
+
+def test_role_mention_markup_rewritten_to_role(conn: sqlite3.Connection) -> None:
+    """Realistic <@&ID> role markup is rewritten to @role and ID is absent."""
+    _vertical(conn, 1, "Tech")
+    _group(conn, 1, vertical_id=1)
+    _person(conn, 5, "Arjun", "5001", role="AH")
+    bucket_id = _bucket(conn, 1)
+    role_id = "987654321012345678"
+    mid = _message(
+        conn,
+        1,
+        1,
+        sender_person_id=5,
+        sender_discord_user_id="5001",
+        content=f"Please coordinate with <@&{role_id}> for stage setup",
+    )
+    _membership(conn, bucket_id, mid, 1)
+    _relevance_success(conn, bucket_id, [mid])
+
+    generator = ScriptedGenerator([_response()])
+    run_proposal_pass(conn, generator)
+
+    (request,) = generator.requests
+    serialized = proposals.serialize_proposal_request(request)
+    assert role_id not in serialized
+    assert "@role" in serialized
+
+    rep = repr(request)
+    assert role_id not in rep
+    assert "@role" in rep
+
+    dict_strings = " ".join(_all_strings_from_obj(dataclasses.asdict(request)))
+    assert role_id not in dict_strings
+    assert "@role" in dict_strings
+
+
+def test_channel_mention_markup_rewritten_to_channel(conn: sqlite3.Connection) -> None:
+    """Realistic <#ID> channel markup is rewritten to #channel and ID is absent."""
+    _vertical(conn, 1, "Tech")
+    _group(conn, 1, vertical_id=1)
+    _person(conn, 5, "Arjun", "5001", role="AH")
+    bucket_id = _bucket(conn, 1)
+    channel_id = "876543210987654321"
+    mid = _message(
+        conn,
+        1,
+        1,
+        sender_person_id=5,
+        sender_discord_user_id="5001",
+        content=f"Updates will be posted in <#{channel_id}> tonight",
+    )
+    _membership(conn, bucket_id, mid, 1)
+    _relevance_success(conn, bucket_id, [mid])
+
+    generator = ScriptedGenerator([_response()])
+    run_proposal_pass(conn, generator)
+
+    (request,) = generator.requests
+    serialized = proposals.serialize_proposal_request(request)
+    assert channel_id not in serialized
+    assert "#channel" in serialized
+
+    rep = repr(request)
+    assert channel_id not in rep
+    assert "#channel" in rep
+
+    dict_strings = " ".join(_all_strings_from_obj(dataclasses.asdict(request)))
+    assert channel_id not in dict_strings
+    assert "#channel" in dict_strings
+
+
+def test_custom_emoji_markup_rewritten_to_name(conn: sqlite3.Connection) -> None:
+    """Realistic <:name:ID> and <a:name:ID> emoji markups rewritten to :name:."""
+    _vertical(conn, 1, "Tech")
+    _group(conn, 1, vertical_id=1)
+    _person(conn, 5, "Arjun", "5001", role="AH")
+    bucket_id = _bucket(conn, 1)
+    static_id = "765432109876543210"
+    anim_id = "654321098765432109"
+    mid = _message(
+        conn,
+        1,
+        1,
+        sender_person_id=5,
+        sender_discord_user_id="5001",
+        content=f"Stage ready <:fire:{static_id}> celebration in <a:party_blob:{anim_id}>",
+    )
+    _membership(conn, bucket_id, mid, 1)
+    _relevance_success(conn, bucket_id, [mid])
+
+    generator = ScriptedGenerator([_response()])
+    run_proposal_pass(conn, generator)
+
+    (request,) = generator.requests
+    serialized = proposals.serialize_proposal_request(request)
+    for forbidden in (static_id, anim_id):
+        assert forbidden not in serialized
+    assert ":fire:" in serialized
+    assert ":party_blob:" in serialized
+
+    rep = repr(request)
+    for forbidden in (static_id, anim_id):
+        assert forbidden not in rep
+    assert ":fire:" in rep
+    assert ":party_blob:" in rep
+
+    dict_strings = " ".join(_all_strings_from_obj(dataclasses.asdict(request)))
+    for forbidden in (static_id, anim_id):
+        assert forbidden not in dict_strings
+    assert ":fire:" in dict_strings
+    assert ":party_blob:" in dict_strings
