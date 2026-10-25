@@ -2,6 +2,8 @@
 
 **AI-Assisted Event Coordination System**
 
+Note: The Piggyback description below is superseded by the SRS (the Discord adapter runs inside the backend and the backend resolves identity from the roster; FR-ING-10, BR-01).
+
 ASEC is an AI-assisted coordination system designed to convert unstructured communication into structured, actionable coordination events.
 
 The system is being developed around a **Discord-based message substrate** for the initial MVP, with a separate ASEC application serving as the dashboard and confirmation layer.

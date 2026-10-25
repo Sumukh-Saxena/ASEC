@@ -181,7 +181,7 @@ def test_reapplying_the_migrations_is_idempotent(tmp_path: Path) -> None:
         rows = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert [row["version"] for row in rows] == list(range(1, 14))
+        assert [row["version"] for row in rows] == list(range(1, 15))
     finally:
         connection.close()
 
