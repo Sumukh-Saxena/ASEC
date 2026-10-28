@@ -12,10 +12,11 @@ database; the backend composes the masked request (C1: opaque per-request
 handles, no real Discord identifiers), validates the response as untrusted
 data (AI-02), resolves assignees at storage time (FR-PRP-10) and writes
 everything in one transaction with the durable 0014 artifact. No bucket
-lifecycle change (DC-1), no task/announcement/notification writes
-(FR-PRP-16), two-valued failure writer (FR-PRP-15, AC-12 half), never
-FAILED_PERMANENT. Tests are written first; the implementation observes
-RED before any code exists.
+lifecycle change (DC-1), no task/announcement writes (FR-PRP-16); the one
+approved FR-PRP-17 reviewer notification is staged inside the same storage
+transaction (owner amendment A7). Two-valued failure writer (FR-PRP-15,
+AC-12 half), never FAILED_PERMANENT. Tests are written first; the
+implementation observes RED before any code exists.
 """
 
 from __future__ import annotations
@@ -2455,13 +2456,13 @@ def test_pass_error_carries_durable_prefix(
     assert len(_proposal_rows(conn, first_id)) == 1
 
 
-def test_no_bucket_state_change_and_no_out_of_scope_writes(
+def test_no_bucket_state_change_and_no_out_of_scope_entity_writes(
     conn: sqlite3.Connection,
 ) -> None:
-    """FR-PRP-16/DC-1: buckets stay PROCESSED; notifications/tasks/
-    announcements are never written by the proposal stage (FR-PRP-17
-    deferred); messages keep their stored content untouched."""
-    bucket_id, _person_id, (mid,) = _expected_scenario(conn, message_count=1)
+    """FR-PRP-16/DC-1: buckets stay PROCESSED; no task/announcement is written.
+    FR-PRP-17 (A7): exactly one reviewer PROPOSAL_READY notification commits
+    with the stored proposal; messages keep their stored content untouched."""
+    bucket_id, person_id, (mid,) = _expected_scenario(conn, message_count=1)
     before = _out_of_scope_writes(conn)
     assert before == {"task": 0, "announcement": 0, "notification": 0}
     generator = ScriptedGenerator(
@@ -2488,7 +2489,42 @@ def test_no_bucket_state_change_and_no_out_of_scope_writes(
         "SELECT flag_unclassified FROM source_message WHERE id = ?", (mid,)
     ).fetchone()
     assert int(flag["flag_unclassified"]) == 0
-    assert _out_of_scope_writes(conn) == before
+    (stored,) = _proposal_rows(conn, bucket_id)
+    assert _out_of_scope_writes(conn) == {
+        "task": 0,
+        "announcement": 0,
+        "notification": 1,
+    }
+    (notification,) = conn.execute("SELECT * FROM notification").fetchall()
+    assert str(notification["event_type"]) == "PROPOSAL_READY"
+    assert int(notification["recipient_person_id"]) == person_id
+    assert int(notification["proposal_id"]) == int(stored["id"])
+    assert str(notification["dedupe_key"]) == f"PROPOSAL_READY:{int(stored['id'])}"
+
+
+def test_reviewer_notification_commits_with_storage(
+    conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A7: the FR-PRP-17 row is staged in the proposal's transaction; if that
+    staging fails, the whole attempt rolls back (no half-stored proposal)."""
+    bucket_id, _person_id, (mid,) = _expected_scenario(conn, message_count=1)
+    generator = ScriptedGenerator([_response(_draft(mid))])
+
+    def explode(connection: sqlite3.Connection, proposal_id: int) -> int | None:
+        del connection, proposal_id
+        raise RuntimeError("notification staging failed")
+
+    monkeypatch.setattr(proposals, "notify_proposal_ready", explode)
+    with pytest.raises(ProposalPassError):
+        run_proposal_pass(conn, generator)
+
+    assert _proposal_rows(conn, bucket_id) == []
+    assert _attempt_count(conn, bucket_id) == 0
+    assert _out_of_scope_writes(conn) == {
+        "task": 0,
+        "announcement": 0,
+        "notification": 0,
+    }
 
 
 def test_writer_never_writes_terminal_outcomes(
@@ -2708,7 +2744,8 @@ def test_backlog_writes_nothing(conn: sqlite3.Connection) -> None:
 def test_end_to_end_pipeline_commits_proposals(conn: sqlite3.Connection) -> None:
     """The full flow on one connection: ingest, bucketing close, relevance
     pass, then the proposal pass — task proposals with resolved-style
-    mentions, zero notifications/tasks/announcements."""
+    mentions, exactly one reviewer PROPOSAL_READY notification and still zero
+    task/announcement writes (FR-PRP-16, FR-PRP-17)."""
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1, channel="chan-1")
     _person(conn, 5, "Arjun", "5001", role="AH")
@@ -2811,12 +2848,17 @@ def test_end_to_end_pipeline_commits_proposals(conn: sqlite3.Connection) -> None
         (int(stored["id"]),),
     ).fetchone()
     assert str(attribute["attr_value"]) == "hall A"
-    # Scope negatives.
+    # Scope negatives plus the one approved FR-PRP-17 notification (A7/A18).
     assert _out_of_scope_writes(conn) == {
         "task": 0,
         "announcement": 0,
-        "notification": 0,
+        "notification": 1,
     }
+    (notification,) = conn.execute("SELECT * FROM notification").fetchall()
+    assert str(notification["event_type"]) == "PROPOSAL_READY"
+    assert int(notification["recipient_person_id"]) == 5
+    assert int(notification["proposal_id"]) == int(stored["id"])
+    assert str(notification["delivery_state"]) == "PENDING"
     assert _artifact_count(conn) == 1
 
 

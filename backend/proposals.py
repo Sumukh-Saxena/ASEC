@@ -24,9 +24,12 @@ The backend owns everything
 - read-only inventory/backlog helpers (C4, NFR-REL-06).
 
 Deliberately absent: bucket lifecycle transitions (buckets stay PROCESSED,
-DC-1), task/announcement/notification writes (FR-PRP-16/FR-PRP-17), any
-`FAILED_PERMANENT` write (two-valued writer), and any comparison against
-SRS latency targets (NFR-PERF-01: recording only, NFR-PERF-02).
+DC-1), task/announcement writes (FR-PRP-16), any `FAILED_PERMANENT` write
+(two-valued writer), and any comparison against SRS latency targets
+(NFR-PERF-01: recording only, NFR-PERF-02). The FR-PRP-17 reviewer
+notification row is the one approved notification write (owner amendment A7):
+it is staged inside the same storage transaction, and a structurally invalid
+proposal is never notified (A18).
 
 Stage tokens are free text (the SRS defines no vocabulary; 0004):
 primary ``PROPOSAL_GENERATION``, fallback
@@ -63,6 +66,7 @@ from backend.relevance import (
     STAGE_RELEVANCE_CLASSIFICATION,
     STAGE_RELEVANCE_FALLBACK_CLASSIFICATION,
 )
+from backend.review import notify_proposal_ready
 
 __all__ = [
     "DEFAULT_PROPOSAL_ATTEMPTS_PER_BUCKET",
@@ -1497,7 +1501,7 @@ def _run_attempt(
             )
             attempt_id = int(cursor.lastrowid or 0)
             for draft in drafts:
-                _persist_proposal(
+                proposal_id = _persist_proposal(
                     connection,
                     bucket_id,
                     inputs.source_vertical_id,
@@ -1507,6 +1511,10 @@ def _run_attempt(
                     inputs.handle_map,
                     finished_at,
                 )
+                # FR-PRP-17 / owner amendment A7: the reviewer notification
+                # commits with the proposal in this same transaction (A18
+                # skips invalid rows, which _persist_proposal never writes).
+                notify_proposal_ready(connection, proposal_id)
             call_seconds = (
                 time.monotonic() - mono_start if mono_start >= 0 else 0.0
             )
@@ -1686,7 +1694,8 @@ def run_proposal_pass(
     for a bucket is its raised *total* attempt cap for this pass.
     Success means the validated proposals, latency rows and the 0014
     artifact are durably recorded with the attempt in one transaction; no
-    bucket-state change, no task/announcement/notification writes.
+    bucket-state change, no task/announcement writes; the one approved
+    FR-PRP-17 reviewer notification rides that same transaction (A7).
 
     A non-bucket-specific failure (e.g. another writer holding the write
     lock) aborts the pass and raises :class:`ProposalPassError` carrying

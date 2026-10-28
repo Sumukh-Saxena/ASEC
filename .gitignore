@@ -15,4 +15,5 @@ __pycache__/
 *.sqlite3-shm
 .opencode/node_modules/
 .tmp_*.xml
+.tmp_pytest_*.txt
 session-*.md

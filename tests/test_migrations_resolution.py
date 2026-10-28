@@ -181,7 +181,9 @@ def test_reapplying_the_migrations_is_idempotent(tmp_path: Path) -> None:
         rows = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert [row["version"] for row in rows] == list(range(1, 15))
+        # Phase 6 adds migration 0015_review_revisions (revision_assignee);
+        # the shared count expectation bumps 14 -> 15 with it.
+        assert [row["version"] for row in rows] == list(range(1, 16))
     finally:
         connection.close()
 
