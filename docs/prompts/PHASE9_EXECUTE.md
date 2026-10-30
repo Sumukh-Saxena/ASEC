@@ -5,6 +5,22 @@ do not start Phase 10.
 
 ---
 
+## SESSION BUDGET PROTOCOL
+
+- **One workstream per session.** Run exactly one workstream (§7) unless the owner says
+  otherwise; finish it at its checkpoint, then stop.
+- **Progress log.** After each checkpoint, append one line to `docs/PHASE9_PROGRESS.md`
+  (create the file if missing) with the checkpoint, the real commands run and their actual
+  outcomes. Never write a result that was not observed.
+- **No automatic continuation.** Never start the next workstream without being told.
+- **Green or stop.** If the tree is not green at a checkpoint (plain `pytest`, ruff, mypy,
+  migrations apply and re-apply, no staged changes), stop and report the failing command
+  and its output; do not paper over it and do not continue.
+- **Owner commits.** The owner commits at each green checkpoint; the agent never stages,
+  commits or pushes.
+
+---
+
 ## 0. What you are doing
 
 Execute **Phase 9** of ASEC as approved in `docs/PHASE9_PLAN.md`: PB-2 (time basis), PB-1
@@ -111,34 +127,43 @@ O9-1  Discord intake implementation.
       Options: (a) stdlib REST polling; (b) stdlib gateway WebSocket; (c) approved
       websockets-class dependency (gateway).
       Plan recommendation: (a) for the MVP. Needed before W5 (W1-W4, W6 proceed).
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Stdlib REST polling with an injected transport, as planned. A
+      gateway client is post-MVP if latency or rate limits hurt.
 
 O9-2  Bot token + test guild/channel supplied through secure configuration (owner-run
       smoke only).
-      OWNER ANSWER:
+      OWNER ANSWER: **OWNER SUPPLIES** the bot token (environment variable only), a test
+      server and channel, and enables the Message Content intent in the Discord developer
+      portal. Reset the old token first. STOP GATE: do not build or run the live smoke
+      without these; the offline suite proceeds.
 
 O9-3  Worker interval and backoff defaults (one backend host).
       Options: (a) 2 s interval, 1-60 s backoff; (b) owner values.
       Plan recommendation: (a), configuration-only. Needed before W3.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) 2 s interval, backoff 1–60 s.
 
 O9-4  Approve the replay export schema (JSONL field set) and the indicative-mode rules
       (plan §4.5).
       Options: approve / amend.
       Plan recommendation: approve; without it replay cannot be exact. Needed before W4.
-      OWNER ANSWER:
+      OWNER ANSWER: Approve, **with an amendment**: the importer must take a sender mapping
+      (export sender label → Discord user ID) and a group mapping (export group → channel),
+      because WhatsApp exports have no Discord IDs. Unmapped senders become UNKNOWN_SENDER
+      and are counted in the batch row. Message IDs for exports without IDs are derived
+      deterministically (hash of group, time, sender label, content).
 
 O9-5  Clock row on a database that starts in replay: seed from progress, or let the first
       caller set the mode?
       Options: (a) no seed, first caller sets mode; (b) seed LIVE, owner migrates replay
       groups.
       Plan recommendation: (a). Needed before W2.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) No seed; the first caller sets the clock mode.
 
 O9-6  Default part sizes: 40 relevance messages, 20 proposal candidates.
       Options: (a) approve now; (b) owner supplies values after Phase 10 benchmarking.
       Plan recommendation: (a). Needed before W6.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Defaults 40 relevance messages and 20 proposal candidates per part;
+      revisit after the Phase 10 benchmark.
 ```
 
 Unanswered items that a workstream needs are a stop, not a guess.

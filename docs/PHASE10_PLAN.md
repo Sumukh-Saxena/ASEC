@@ -32,7 +32,23 @@ Real facts verified in the repository today:
   `EvalRevision`, `EvalFieldDelta` — the labelled-data source required by FR-REV-08/09.
 - No HTTP adapter, no evaluation module, no `evaluation_run` table; `dependencies = []`.
 - `docs/SRS.md` §7 names candidate model families, including hosted models "as a
-  reference only"; SRS §6.4 gives latency targets but **no accuracy threshold**.
+  reference only", and **does** state quality targets. §7 verbatim (lines 506–515):
+
+  ```
+  Targets (latency targets are in section 6.4)
+
+  | Measure | Target |
+  |---|---|
+  | Relevance recall (false-negative rate ≤ 5%) | ≥ 95% |
+  | Relevance precision | ≥ 80% |
+  | Proposal type, assignment mode | ≥ 95% each |
+  | Assignee, task type | ≥ 90% each |
+  | Proposal acceptance overall | ≥ 80% |
+  | Description quality | Human-rated, no percentage |
+  ```
+
+  Latency targets stay in §6.4. "Description quality" is the only measure without a
+  percentage, and AI-06's "meets the targets" therefore means the five numeric rows.
 
 ---
 
@@ -219,8 +235,10 @@ def write_report(run, path) -> None
   runtime reports it, cost estimate (owner-supplied unit price) and data-handling notes.
 - The comparison table has one row per candidate model, same dataset and prompts
   (AI-06), with hosted models marked "reference only".
-- The harness **recommends** the smallest self-hosted model meeting the owner-approved
-  thresholds; it never selects or deploys. The owner approves the outcome (O10-3).
+- The harness **recommends** the smallest self-hosted model meeting the SRS §7 targets
+  (relevance recall ≥ 95%, precision ≥ 80%, proposal type and assignment mode ≥ 95%,
+  assignee and task type ≥ 90%, acceptance ≥ 80%); it never selects or deploys. The owner
+  confirms the outcome (O10-3, answered).
 - The report must state the SRS ambiguity: the 30 s message-to-proposal P95 includes
   bucket wait, and with M=30 s / C=2 s the bucket alone can consume up to 32 s. A result
   that hides this is a failed report (SRS ambiguity, DECISIONS §D).
@@ -360,7 +378,7 @@ marks synthetic runs as non-production.
 |---|---|---|---|
 | O10-1 | Approve the adapter wire contract (§4.1) and endpoint paths | (a) approve as written; (b) owner supplies a different contract | (a), smallest contract that preserves EIR-03 |
 | O10-2 | Supply/approve the labelled evaluation set and minimum size; confirm who labels | (a) owner labels the sample group chat; (b) delegate to a named human | (a); agents must not invent labels |
-| O10-3 | Approve accuracy/recall thresholds for AI-06 "meets the targets" (SRS gives none) and the final model choice | (a) owner sets thresholds now; (b) set after the first benchmark | (a) before model selection; without it AI-06 cannot be decided |
+| O10-3 | ~~Approve accuracy/recall thresholds for AI-06 "meets the targets" (SRS gives none)~~ **ANSWERED 2026-10-29 (`docs/OWNER_ANSWERS.md`)**: use the SRS §7 targets — recall ≥ 95%, precision ≥ 80%, proposal type and assignment mode ≥ 95% each, assignee and task type ≥ 90% each, acceptance ≥ 80% — and the final model choice is the smallest model meeting them | decided; no new numbers | The earlier plan claim that no accuracy targets exist was wrong; §7 has the table |
 | O10-4 | Approve which self-hosted models/hardware are available; confirm hosted models are reference-only | list + approval | owner supplies; no hosted dependency in the product path |
 | O10-5 | Confirm archive-only retention and that no training uses festival chat | (a) archive only; (b) other | (a), already the default |
 | O10-6 | Accept or reject the 30 s P95 target given the 17–32 s bucket wait | (a) relax the target; (b) shorten M/C; (c) keep and document | (c) for the MVP report; owner decides the SRS correction |
@@ -369,8 +387,10 @@ marks synthetic runs as non-production.
 
 ## 10. SRS ambiguities carried by this phase
 
-1. **No accuracy target** — SRS §6.4 sets latency only; AI-06's "meets the targets" is
-   undefined for quality. O10-3 must supply thresholds.
+1. **Quality targets do exist** — SRS §7's target table (recall ≥ 95%, precision ≥ 80%,
+   proposal type/assignment mode ≥ 95%, assignee/task type ≥ 90%, acceptance ≥ 80%) is the
+   AI-06 "targets" definition; only "description quality" is human-rated without a
+   percentage. O10-3 is answered: use these, do not invent numbers.
 2. **30 s P95 vs bucket wait** — bucket wait alone can be 17–32 s; the report must not
    hide it (DECISIONS §D).
 3. **Hosted models** — listed in §7 but "reference only"; the product path stays
@@ -427,7 +447,7 @@ the suite, no raw ID or secret in any request/report.
 | Hosted call with unmasked/raw ids | guard before transport, leak tests |
 | Labelled data committed | owner-supplied path outside repo, audit |
 | Benchmark hides the 30 s contradiction | mandatory caveat test |
-| Model choice made by an agent | recommendation only, O10-3 approval |
+| Model choice made by an agent | recommendation only; O10-3 answered with the SRS §7 targets |
 | Retry storm | bounded attempts/backoff, 4xx no retry |
 
 | Checkpoint | Green state |
@@ -462,6 +482,20 @@ the suite, no raw ID or secret in any request/report.
 - **AI-08** End-to-end evaluation shall compare the actionable items the system finds
   with those a person finds by reading the same period. It shall also report review
   burden: proposals per reviewer per day and the share rejected.
+- **SRS §7 targets (lines 506–515), verbatim:**
+
+  ```
+  Targets (latency targets are in section 6.4)
+
+  | Measure | Target |
+  |---|---|
+  | Relevance recall (false-negative rate ≤ 5%) | ≥ 95% |
+  | Relevance precision | ≥ 80% |
+  | Proposal type, assignment mode | ≥ 95% each |
+  | Assignee, task type | ≥ 90% each |
+  | Proposal acceptance overall | ≥ 80% |
+  | Description quality | Human-rated, no percentage |
+  ```
 - **FR-REV-08** Rejected and edited proposals shall be usable as labelled data for model
   evaluation.
 - **NFR-REL-07** If a backup model is used, it runs only after the primary fails. Both

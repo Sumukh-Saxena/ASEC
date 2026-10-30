@@ -4,6 +4,22 @@ Paste this whole file into a fresh session. It is self-contained. This is the la
 
 ---
 
+## SESSION BUDGET PROTOCOL
+
+- **One workstream per session.** Run exactly one workstream (§7) unless the owner says
+  otherwise; finish it at its checkpoint, then stop.
+- **Progress log.** After each checkpoint, append one line to `docs/PHASE12_PROGRESS.md`
+  (create the file if missing) with the checkpoint, the real commands run and their actual
+  outcomes. Never write a result that was not observed.
+- **No automatic continuation.** Never start the next workstream without being told.
+- **Green or stop.** If the tree is not green at a checkpoint (plain `pytest`, ruff, mypy,
+  migrations apply and re-apply, no staged changes), stop and report the failing command
+  and its output; do not paper over it and do not continue.
+- **Owner commits.** The owner commits at each green checkpoint; the agent never stages,
+  commits or pushes.
+
+---
+
 ## 0. What you are doing
 
 Execute **Phase 12** of ASEC as approved in `docs/PHASE12_PLAN.md`: the OTP/session
@@ -60,7 +76,9 @@ If the tree is red, **stop and report**.
 - No secret, token, OTP code, phone number or message content in a response body, a log, an
   error, a test fixture or a report.
 - Do not edit `docs/SRS.md` or `docs/DECISIONS.md`.
-- **No new dependency** without O12-1. The recommended transport is stdlib `http.server`.
+- **Dependencies:** the core stays dependency-free. O12-1 chose a FastAPI-class framework
+  only as an optional `api` extra confined to `backend/api` (exact pin, domain services
+  framework-free, all non-API tests green without the extra).
 - The API is a thin adapter: parse, authenticate, call one existing service, map errors,
   serialize. **No SQL in handlers** except authentication/session and admin reads.
 - Authorization is enforced **server-side inside the service**; a route check is defence in
@@ -113,38 +131,45 @@ O12-1 HTTP framework.
       Options: (a) stdlib http.server (no dependency); (b) FastAPI-class dependency.
       Plan recommendation: (a): twelve endpoints, one host, zero install weight.
       Needed before W2 (W1 can proceed with handler-level tests).
-      OWNER ANSWER:
+      OWNER ANSWER: (b) A mature framework (FastAPI-class) in an optional `api` extra,
+      confined to `backend/api`, domain services framework-free. The Phase 12 plan needs a
+      rewrite of its server section at phase start.
 
 O12-2 Approve the minimum route surface (plan §4.3) as the mobile contract.
       Options: approve / amend.
       Plan recommendation: approve; it mirrors existing services. Needed before W3.
-      OWNER ANSWER:
+      OWNER ANSWER: Approve the 12-endpoint surface, subject to a quick review at phase
+      start.
 
 O12-3 Session lifetime, OTP expiry, attempts, rate limits.
       Options: (a) 12 h session, 5 min OTP, 5 verify attempts, 3 requests / 15 min;
       (b) owner values.
       Plan recommendation: (a), configuration-only. Needed before W1.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) 12 h sessions, 5 min OTP, 5 attempts, 3 requests per 15 min.
 
 O12-4 Confirm roster changes have no API in the MVP; Admin changes are operational.
       Options: (a) confirm; (b) add an Admin endpoint.
       Plan recommendation: (a), FR-ROS-02. Needed before closing W3.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) No roster API in the MVP; the roster is loaded by script before the
+      festival.
 
 O12-5 Approve the FR-AUT-04 matrix as the production baseline (cells unchanged).
       Options: approve / amend cells.
       Plan recommendation: approve before production; the tests already encode it.
       Needed before W5.
-      OWNER ANSWER:
+      OWNER ANSWER: Approve the FR-AUT-04 matrix as the baseline **including the cells added
+      by O7-3, O7-5 and O8-1**.
 
 O12-6 Mobile app repo/contract ownership and TLS/hosting arrangement.
       Plan recommendation: owner supplies; needed before any real client connects.
-      OWNER ANSWER:
+      OWNER ANSWER: **OWNER SUPPLIES** the app repo, contract ownership and the TLS or
+      hosting arrangement. STOP GATE before any real client connects; localhost tests
+      proceed.
 
 O12-7 Retention for sessions/denials/attempts.
       Options: (a) keep as evidence, archive per DR-07; (b) other.
       Plan recommendation: (a).
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Keep sessions, denials and attempts as evidence; archive only.
 ```
 
 Unanswered items that a workstream needs are a stop, not a guess.

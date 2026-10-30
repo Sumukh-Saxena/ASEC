@@ -1013,7 +1013,7 @@ A manual roster selection (`AssigneeSelection(person_id=…)`) naming a person i
 5. **`mypy` scope.** The agreed check is `mypy backend` (14 files); `tests/` is not type-checked in any phase. Running `mypy backend tests` reports 89 pre-existing test-typing errors, so it is not part of the gate.
 6. **Not committed.** No staging, commit or push was performed. The two untracked `.tmp_pytest_*.txt` logs were deleted in the closing pass and `.tmp_pytest_*.txt` is now ignored (`.gitignore:18`), so `git status --short` shows only the Phase 6 files.
 
-### 15.8 "6.1 closing fixes" (2026-10-28, uncommitted tree at `d83511d`)
+### 15.8 "6.1 closing fixes" (2026-10-28, committed in `fb5263d`)
 
 Five closing items were done one at a time, tests first, with real RED before each implementation. Nothing was staged or committed.
 

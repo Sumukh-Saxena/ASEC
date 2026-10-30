@@ -181,20 +181,25 @@ def deliver_pending(connection, *, push: PushSender | None, limit: int = 50,
 
 ### 4.3 FCM sender (EIR-04, FR-NOT-07)
 
-- `FcmPushSender` implements `PushSender` over stdlib `urllib.request` + `json`.
-- Two transport modes are possible; the owner decides (O11-2):
-  - **Legacy HTTP** (`https://fcm.googleapis.com/fcm/send`, `Authorization: key=...`):
-    no new dependency, simple, but deprecated by Google.
-  - **HTTP v1** (`https://fcm.googleapis.com/v1/projects/{id}/messages:send`, OAuth2
-    service-account JWT): needs RS256 signing and therefore an approved dependency
-    (`cryptography`/`google-auth`) or an external token provider.
-- The plan's recommendation is legacy HTTP for the MVP **only if the owner accepts the
-  deprecation risk**; otherwise v1 with an approved dependency. The interface isolates
-  the choice, so switching does not touch the worker.
-- Payload: `to`/`token`, `notification.title`, `notification.body`, `data.deep_link`,
-  `collapse_key`. Response `401/403` is permanent (no retry, mark `EXHAUSTED`), `429/5xx`
-  retry, malformed response fails the attempt. The server key/service account is read
-  with `Config.require`, never logged or stored in the database.
+- **Mode: FCM HTTP v1** (`https://fcm.googleapis.com/v1/projects/{id}/messages:send`,
+  OAuth2 service-account JWT). `docs/OWNER_ANSWERS.md` O11-2 chose (b); the legacy HTTP
+  key API is not a safe base (the owner believes Google shut it down in 2024 — confirm in
+  the Firebase docs before building). There is no legacy-key option in this plan.
+- `FcmPushSender` implements `PushSender` and lives in one module behind that protocol, so
+  the delivery worker never imports the provider. The worker and every core test use a
+  fake `PushSender`; no test requires the extra.
+- **Dependency policy (`docs/OWNER_ANSWERS.md`, applies to every phase).** The core backend
+  stays dependency-free. The HTTP v1 signing package is allowed only as an optional extra
+  `push` in `pyproject.toml` (`google-auth`/`cryptography`-class, exact pin at least two
+  weeks old), confined to the `FcmPushSender` module, **with all core tests passing without
+  it installed**. The import is lazy inside the sender, so importing
+  `backend.notification_delivery` and running plain `pytest` works on a clean install; a
+  missing extra raises `PushProviderNotConfigured` at send time, never an import error at
+  module load. Installing the extra is an owner/deployment step, not a core dependency.
+- Payload: `message.token`, `message.notification.title/body`, `message.data.deep_link`,
+  `message.android.collapse_key`. Response `401/403` is permanent (no retry, mark
+  `EXHAUSTED`), `429/5xx` retry, malformed response fails the attempt. The service-account
+  JSON is read with `Config.require`, never logged or stored in the database.
 - Endpoint registration (0023) is written by the future API (Phase 12); Phase 11 provides
   `register_endpoint`/`deactivate_endpoint` helpers for tests and the API to call. Token
   uniqueness is enforced; a rotated token deactivates the old row.
@@ -206,11 +211,12 @@ def deliver_pending(connection, *, push: PushSender | None, limit: int = 50,
 - the protocol and a `RecordingOtpSender` for tests (never used in production),
 - a `NotificationOtpSender` that stages an `OTP_CODE` notification row when no SMS
   provider is configured — this keeps sign-in testable without inventing a provider,
-- an explicit `SmsProviderNotConfigured` error for production paths until O11-1 is
-  answered.
+- an explicit `SmsProviderNotConfigured` error for production paths until an SMS provider is
+  configured.
 
-The SRS figure names SMS to the roster phone; EIR-04 names FCM push. The contradiction is
-recorded in §10 and is the owner's to resolve. No code invents an SMS vendor.
+The SRS figure names SMS to the roster phone; EIR-04 names FCM push. O11-1 answered: build
+this interface with a development sender now, and the owner supplies the SMS provider before
+go-live. No code invents an SMS vendor.
 
 ### 4.5 Announcement fan-out (FR-NOT-06, FR-REV-10)
 
@@ -336,7 +342,7 @@ Already complete elsewhere: staging (6/7/8), audience columns (7), API/session (
 | `tests/test_notification_list.py` (new) | self-only, unread filter, mark-read idempotent, no Admin cross-inbox |
 | `tests/test_announcement_fanout.py` (new) | VERTICAL, AH_VOLUNTEERS, inactive excluded, no reports → zero, idempotent sweep, no source chat |
 | `tests/test_push_endpoints.py` (new) | 0023 constraints, token unique, active index, deactivation, secret redaction |
-| `tests/test_fcm_sender.py` (new) | legacy payload, auth header, 401 permanent, 429/5xx retry, collapse key |
+| `tests/test_fcm_sender.py` (new) | HTTP v1 payload, bearer token from a fake signer, 401 permanent, 429/5xx retry, collapse key, module import works without the `push` extra |
 | `tests/test_otp_sender.py` (new) | protocol, fake sender, code never logged, unconfigured error |
 
 Mutation list:
@@ -365,7 +371,7 @@ Mutation list:
 | W5 | `OtpSender` interface + unconfigured path | C4 |
 | W6 | delivery tick integration + mutations/audits/DoD | final |
 
-W4 is gated on the FCM mode decision and credentials; W1–W3 and W5 run without it.
+W4 is gated on the `push` extra being installed and FCM credentials; W1–W3 and W5 run without it, and the full core suite must stay green with the extra absent.
 
 ---
 
@@ -373,8 +379,8 @@ W4 is gated on the FCM mode decision and credentials; W1–W3 and W5 run without
 
 | ID | Question | Options | Recommendation |
 |---|---|---|---|
-| O11-1 | OTP/SMS provider and credentials; resolve EIR-04 (FCM) vs SRS figure (SMS) | (a) SMS vendor for OTP + FCM for push; (b) FCM-only; (c) defer, use in-app code for testing only | (a) matches FR-ROS-03's roster-phone wording; owner supplies credentials |
-| O11-2 | FCM mode | (a) legacy HTTP key (no dependency, deprecated); (b) HTTP v1 + approved `google-auth`/`cryptography` dependency; (c) owner-run push gateway | (a) for the MVP only if deprecation is accepted; otherwise (b) |
+| O11-1 | OTP/SMS provider and credentials; resolve EIR-04 (FCM) vs SRS figure (SMS) | **ANSWERED (`docs/OWNER_ANSWERS.md`)**: (c) build the OTP sender interface with a development sender now; OWNER SUPPLIES the SMS provider before go-live | adopted; FR-ROS-03 needs SMS to the roster phone, so the owner starts registration early |
+| O11-2 | FCM mode | **ANSWERED (`docs/OWNER_ANSWERS.md`)**: (b) HTTP v1 through an optional `push` extra behind `PushSender`; the legacy HTTP key is not used | decided; signing package confined to one module, core tests run without it |
 | O11-3 | Retry policy: max attempts, backoff base/cap, batch limit | (a) 5 attempts, 5 s base, 5 min cap, 50/batch; (b) owner values | (a), configuration-only |
 | O11-4 | Confirm `VERTICAL` announcement audience = all active members of the vertical | (a) all active members; (b) volunteers only | (a), literal FR-REV-10; confirm |
 | O11-5 | Deep-link scheme for the mobile app (out of repo) | `asec://review/{id}` etc. | owner supplies; Phase 11 uses an opaque path string |
@@ -384,7 +390,8 @@ W4 is gated on the FCM mode decision and credentials; W1–W3 and W5 run without
 ## 10. SRS ambiguities carried by this phase
 
 1. **OTP delivery channel** — FR-ROS-03 says SMS to the roster phone; EIR-04 names FCM
-   push. O11-1 decides; no vendor is invented.
+   push. O11-1 answered: both channels — the OTP sender interface with a development sender
+   now, the SMS provider supplied by the owner before go-live. No vendor is invented.
 2. **FR-NOT-06 "push announcements"** — the SRS does not define a separate broadcast
    operation; this plan treats it as the existing accept + fan-out path.
 3. **"Assignee accepted or denied → creator"** — a claim is an acceptance; Phases 7/8
@@ -440,7 +447,7 @@ the suite, no secret in any attempt/row/report.
 | Duplicate notification rows | unique dedupe key; worker updates only |
 | Delivery failure blocks a task change | delivery outside the domain transaction |
 | Token/phone/code leak | boundary sanitization + audits + tests |
-| FCM deprecation | interface isolates transport; O11-2 |
+| FCM HTTP v1 | optional `push` extra behind `PushSender`; core tests run without it (O11-2) |
 | Announcement audience drift | 0018 columns only; no scope fallback |
 | Crash between send and state update | collapse key + attempt row; documented at-least-once |
 | Unlimited retries | max attempts + `EXHAUSTED` visibility |

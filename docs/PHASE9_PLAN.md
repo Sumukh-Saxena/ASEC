@@ -211,13 +211,39 @@ def run_worker(connection, *, tick, stop_event, interval_seconds: float) -> None
 
 ```python
 def import_export(connection, path, *, time_zone: str, source: str,
+                  sender_map: Mapping[str, str] | None = None,
+                  group_map: Mapping[str, str] | None = None,
                   batch_metadata: Mapping[str, str] | None = None) -> ReplayBatch
 ```
 
 - Reads a JSONL file of normalized events (one object per line) with at least
-  `source_message_id`, `group`, `timestamp`, `content`, and optional `sender`, `reply_to`,
-  `mentions`, `reactions`. The exact export schema is an OWNER input (O9-4); the importer
-  validates it and fails loud on unknown required fields.
+  `group`, `timestamp`, `content`, and optional `source_message_id`, `sender`, `reply_to`,
+  `mentions`, `reactions`. The field set is approved as amended by O9-4 (see below).
+- **Sender mapping (O9-4 amendment).** A WhatsApp-style export has sender *labels* (display
+  names or phone numbers), not Discord user IDs, so `sender_map` is a required input for any
+  export without Discord IDs: `export sender label -> Discord user ID`. The importer applies
+  it to `sender` before building the `MessageEvent`; the stored event carries the mapped
+  `sender_discord_user_id`, so downstream eligibility (Phase 7, FR-PRP-02) resolves the
+  person exactly as for live mail. Without the mapping the replay yields no eligible senders
+  and therefore no proposals, which is why it is not optional.
+- **Group mapping (O9-4 amendment).** `group_map` translates `export group -> Discord
+  channel ID`; the importer resolves the channel to the existing `source_group` by
+  `discord_channel_id`. An unmapped group aborts the batch before any write (a message with
+  no group would violate FR-BKT-02 per-group independence); the abort names the first
+  unmapped label in the error, never the content.
+- **Deterministic message IDs (O9-4 amendment).** When a line has no `source_message_id`,
+  the importer derives one as
+  `replay:<sha256(group_label|timestamp|sender_label|content)[:32]>` — lower-case hex, the
+  same value on every import of the same line, so `ingest_message`'s
+  `(source, source_message_id)` key gives idempotent re-import without a side table. The
+  four inputs are used exactly as exported (before mapping), so a change of mapping does not
+  renumber history; a mapping change is a new export, not a silent rewrite (DR-03). A line
+  that *does* carry an ID keeps it verbatim.
+- **Unmapped senders.** A sender label absent from `sender_map` is stored with
+  `sender_discord_user_id=None`, which ingestion already records as `UNKNOWN_SENDER`
+  (FR-ING-10); it is **counted in the batch row** as `UNKNOWN_SENDER`
+  (`counts_json.unknown_sender`, with `counts_json.unmapped_sender_labels` holding the
+  distinct labels) and reported, never dropped and never guessed to a person.
 - Each line is converted to the existing `MessageEvent` and written through
   `ingest_message` — the same path as live messages (FR-ING-08). Reaction lines go
   through `ingest_reaction`.
@@ -232,6 +258,23 @@ def import_export(connection, path, *, time_zone: str, source: str,
 - No replay clock is mixed with live: the importer requires the group's clock mode to be
   `REPLAY` (or unset) and advances it to the maximum event time imported, so replay runs
   deterministically, independent of wall-clock speed.
+- The mapping files are owner-supplied CSV/JSON outside the repository (OWNER SUPPLIES,
+  O9-2 covers credentials; the mappings themselves are ordinary data and must not be
+  committed if they contain real names or phone numbers).
+
+#### 4.5.1 Required tests (O9-4 amendment)
+
+| # | Test | Assertion |
+|---|---|---|
+| R-1 | Replay the sample with a complete `sender_map` and `group_map` | every eligible sender resolves to a person; the proposal pass sees eligible senders (the end-to-end reason the mapping exists) |
+| R-2 | Replay with an empty `sender_map` | batch completes, every message stored, `counts_json.unknown_sender == number of lines`, no proposal candidate |
+| R-3 | Replay with a partial `sender_map` | only unmapped lines count as unmapped; mapped lines carry the Discord ID and are eligible |
+| R-4 | Unmapped group label | abort before any write; no `source_message` rows; error names the label, not the content |
+| R-5 | Two lines identical in group, timestamp, sender and content | deterministic IDs collide by design → the second is a duplicate, not a second message (documented consequence of content-addressed IDs) |
+| R-6 | Lines differing in exactly one of the four inputs | distinct derived IDs |
+| R-7 | Same file imported twice with the same mapping | zero new messages, batch reports duplicates |
+| R-8 | Same file, mapping changed between imports | derived IDs unchanged (derivation is pre-mapping) |
+
 
 ### 4.6 Discord adapter (FR-ING-01, EIR-01)
 
@@ -364,7 +407,7 @@ inserted/duplicate/skipped/indicative counts and the timezone.
 |---|---|---|
 | FR-ING-01, EIR-01 | `discord_adapter.py` protocol + REST source | fake-transport tests |
 | FR-ING-02/04 (reused from 2) | existing ingestion; replay uses it | replay idempotency tests |
-| FR-ING-08 | `replay.py` + 0021 | replay tests |
+| FR-ING-08 | `replay.py` + 0021, with sender/group mapping and deterministic IDs | replay tests (R-1..R-8) |
 | FR-BKT-01 | settle-then-assign includes receipt-time fallback | every-message test |
 | FR-BKT-02/03 (initial in 3) | existing group separation and sort preserved | regression tests |
 | FR-BKT-04 | join rule held fixed under the clock | boundary tests |
@@ -395,7 +438,7 @@ New/extended tests:
 | `tests/test_group_clock.py` (new) | monotonic clock, mode lock, restart durability, close order, idempotent re-advance |
 | `tests/test_bucketing_clock.py` (new) | settle-then-assign, C boundary, W/G/M boundaries, arrival-order permutations, late one-hop link, no fallback chain |
 | `tests/test_worker.py` (new) | tick order, `stop_event`, crash/restart on a file DB, duplicate-tick idempotency |
-| `tests/test_replay.py` (new) | JSONL import, timezone, idempotent re-import, indicative counts, batch row |
+| `tests/test_replay.py` (new) | JSONL import, timezone, sender/group mapping (complete, empty, partial), unmapped sends counted as `UNKNOWN_SENDER` in the batch row, deterministic IDs and their content-addressed collision, idempotent re-import, mapping change does not renumber, indicative counts, batch row |
 | `tests/test_discord_adapter.py` (new) | normalization, cursor, pagination, 429/5xx, redaction, reactions |
 | `tests/test_bucket_partitioning.py` (new) | parts cover every message once, provenance agreement, failure writes nothing |
 | `tests/test_bucketing_service.py` (extend) | PB-2 receipt fallback, skipped visibility |
@@ -440,7 +483,7 @@ for manual verification; the rest of Phase 9 can finish without it.
 | O9-1 | Discord intake implementation | (a) stdlib REST polling (no dependency, latency = poll interval); (b) stdlib gateway WebSocket (complex, real-time); (c) approved `websockets`-class dependency (gateway) | (a) for MVP: satisfies FR-ING-01, no dependency, cursor reconstructable; revisit if real-time is required |
 | O9-2 | Supply a bot token and a test guild/channel through secure configuration; confirm no token in repo | required | owner-run smoke only; the suite stays offline |
 | O9-3 | Worker deployment: one backend host, interval and backoff defaults | (a) 2 s interval, 1–60 s backoff; (b) other | (a), tunable via config |
-| O9-4 | Replay export schema: approve the JSONL field set and the indicative-mode rules | approve plan §4.5 | approve; without it replay cannot be exact |
+| O9-4 | Replay export schema: approve the JSONL field set and the indicative-mode rules | **ANSWERED (`docs/OWNER_ANSWERS.md`): approved with an amendment** — `sender_map` (label → Discord user ID) and `group_map` (group → channel) are importer inputs; unmapped senders become `UNKNOWN_SENDER` and are counted in the batch row; IDs for exports without IDs are derived as `sha256(group, time, sender label, content)` | adopted in §4.5; without mapping a replay yields no eligible senders |
 | O9-5 | Clock seed/mode for databases that start in replay | (a) no seed, first caller sets mode; (b) seed LIVE, owner migrates replay groups | (a), simplest and avoids a mode conflict |
 | O9-6 | Default part sizes (40 relevance messages, 20 proposal candidates) | (a) approve; (b) owner supplies values after Phase 10 benchmarking | (a) now, revisit in 10 |
 

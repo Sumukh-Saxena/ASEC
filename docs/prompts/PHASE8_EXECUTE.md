@@ -5,6 +5,22 @@ do not start Phase 9.
 
 ---
 
+## SESSION BUDGET PROTOCOL
+
+- **One workstream per session.** Run exactly one workstream (§7) unless the owner says
+  otherwise; finish it at its checkpoint, then stop.
+- **Progress log.** After each checkpoint, append one line to `docs/PHASE8_PROGRESS.md`
+  (create the file if missing) with the checkpoint, the real commands run and their actual
+  outcomes. Never write a result that was not observed.
+- **No automatic continuation.** Never start the next workstream without being told.
+- **Green or stop.** If the tree is not green at a checkpoint (plain `pytest`, ruff, mypy,
+  migrations apply and re-apply, no staged changes), stop and report the failing command
+  and its output; do not paper over it and do not continue.
+- **Owner commits.** The owner commits at each green checkpoint; the agent never stages,
+  commits or pushes.
+
+---
+
 ## 0. What you are doing
 
 Execute **Phase 8** of ASEC as approved in `docs/PHASE8_PLAN.md`: the approval read model,
@@ -106,19 +122,22 @@ pipeline (Phases 9–12), or edit requirements.
 O8-1  May Admin decide any pending request without being a recipient? (Matrix says Yes.)
       Options: (a) Admin override; (b) recipients only.
       Plan recommendation: (a), per the FR-AUT-04 baseline. Needed before W1.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Admin may decide any pending request without being a recipient.
+      Add the matrix row.
 
 O8-2  A recipient whose current role/vertical changed: does authority follow the
       snapshot or the current role (FR-AUT-05 vs FR-XV-04)?
       Options: (a) current role/vertical wins; (b) snapshot only.
       Plan recommendation: (a) — the snapshot decides who was asked, the current role
       decides authority. Needed before W1.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Authority uses the person's current role and vertical (FR-AUT-05);
+      the recipient snapshot only records who was asked.
 
 O8-3  A later decision attempt: silent no-op or recorded attempt?
       Options: (a) no-op return, no denial row, no history; (b) record the attempt.
       Plan recommendation: (a), FR-XV-04 "change nothing". Needed before W2.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) A late decision attempt writes nothing and returns the existing
+      decision (FR-XV-04: later attempts see it).
 ```
 
 All three gate W1/W2. Unanswered = stop, do not guess.

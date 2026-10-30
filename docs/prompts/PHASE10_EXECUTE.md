@@ -5,6 +5,22 @@ do not start Phase 11.
 
 ---
 
+## SESSION BUDGET PROTOCOL
+
+- **One workstream per session.** Run exactly one workstream (§7) unless the owner says
+  otherwise; finish it at its checkpoint, then stop.
+- **Progress log.** After each checkpoint, append one line to `docs/PHASE10_PROGRESS.md`
+  (create the file if missing) with the checkpoint, the real commands run and their actual
+  outcomes. Never write a result that was not observed.
+- **No automatic continuation.** Never start the next workstream without being told.
+- **Green or stop.** If the tree is not green at a checkpoint (plain `pytest`, ruff, mypy,
+  migrations apply and re-apply, no staged changes), stop and report the failing command
+  and its output; do not paper over it and do not continue.
+- **Owner commits.** The owner commits at each green checkpoint; the agent never stages,
+  commits or pushes.
+
+---
+
 ## 0. What you are doing
 
 Execute **Phase 10** of ASEC as approved in `docs/PHASE10_PLAN.md`: the stdlib JSON HTTP
@@ -114,37 +130,49 @@ O10-1 Approve the adapter wire contract (plan §4.1: function, contract_version,
       prompt_version, input; response arrays) and the endpoint paths.
       Options: (a) approve as written; (b) owner supplies a different contract.
       Plan recommendation: (a). Needed before W1.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Approve the wire contract as written.
 
 O10-2 Supply/approve the labelled evaluation set, its location outside the repo, and who
       labels it; confirm the minimum size.
       Options: (a) owner labels the sample group chat; (b) delegate to a named human.
       Plan recommendation: (a). Needed before any production report (W4-W7).
-      OWNER ANSWER:
+      OWNER ANSWER: **OWNER SUPPLIES** the labelling work: at least 300 masked messages from
+      the sample, including at least 80 RELEVANT and at least 60 hard negatives (jokes,
+      status reports, banter), each with the sender's role and, for relevant ones, the
+      expected proposal. The assistant helps label; the owner confirms. STOP GATE for any
+      production report; synthetic runs are marked non-production.
 
 O10-3 Approve the accuracy/recall thresholds for AI-06 ("meets the targets") and the final
       model choice.
       Options: (a) thresholds now; (b) after the first benchmark.
       Plan recommendation: (a) before model selection. Needed before W7's recommendation
       is final.
-      OWNER ANSWER:
+      OWNER ANSWER: Use the SRS section 7 targets: relevance recall at least 95% and
+      precision at least 80%; proposal type and assignment mode at least 95% each;
+      assignee and task type at least 90% each; proposal acceptance at least 80%. **The
+      plan is wrong that none exist.**
 
 O10-4 Which self-hosted models/hardware are available; confirm hosted models are
       reference-only.
       Plan recommendation: owner supplies the list; no hosted dependency in the product
       path. Needed before W7.
-      OWNER ANSWER:
+      OWNER ANSWER: Start with the owner's Windows PC (16 GB RAM, NVIDIA 4–8 GB VRAM)
+      running one small model (about 4B) and one 7–8B model through Ollama, and a larger
+      open model of about 14B in a Colab notebook for the quality ceiling. A hosted model
+      (Gemini) only on masked synthetic text, as a baseline. The owner confirms the exact
+      model tags in the Ollama library.
 
 O10-5 Confirm archive-only retention, no training on festival chat.
       Options: (a) archive only; (b) other.
       Plan recommendation: (a).
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Archive only; no training on festival chat without a consent plan.
 
 O10-6 Accept or reject the 30 s message-to-proposal P95 target given a 17-32 s bucket wait.
       Options: (a) relax the target; (b) shorten M/C; (c) keep and document.
       Plan recommendation: (c) for the MVP report; the owner owns the SRS correction.
       Needed before the benchmark report is accepted.
-      OWNER ANSWER:
+      OWNER ANSWER: (c) Keep the 30 s target in code and document that the bucket wait
+      alone is 17–32 s. The owner later edits the SRS to measure from bucket close.
 ```
 
 Unanswered items that a workstream needs are a stop, not a guess.

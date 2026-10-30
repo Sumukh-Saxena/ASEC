@@ -29,7 +29,8 @@ Real facts verified today:
   `Config.require` is the only value access.
 - `FR-AUT-04` matrix is a 12-operation × 4-role table in `docs/SRS.md` §3.9; each cell
   needs an automated test.
-- `pyproject.toml` has `dependencies = []`; the HTTP framework choice is still open.
+- `pyproject.toml` has `dependencies = []`; O12-1 is answered: a FastAPI-class framework
+  in an optional `api` extra confined to `backend/api` (see §4.2, rewrite at phase start).
 - Phase 11 ships `OtpSender` and a test sender; FR-ROS-03 is otherwise unimplemented.
 
 ---
@@ -56,7 +57,8 @@ Real facts verified today:
 - No new domain behaviour: routes call existing services; no SQL in handlers beyond
   authentication/session and admin reads.
 - No background worker start from the API process; it stays a separate entry point.
-- No new dependency without the framework decision (O12-1).
+- No new dependency outside the O12-1 optional `api` extra (FastAPI-class framework
+  confined to `backend/api`, exact pin, core tests green without it).
 - No roster import/edit endpoint (FR-ROS-02 says the MVP has none); no hard delete.
 - No OTP provider invention (Phase 11 O11-1); tests use a recording sender.
 - No SRS/DECISIONS edit.
@@ -133,14 +135,51 @@ def revoke_session(connection, token: str, *, now: str | None = None) -> bool
 - No password, no refresh token, no cookie; `Authorization: Bearer <token>` only, so no
   CSRF surface. TLS termination is deployment (O12-6).
 
-### 4.2 HTTP transport (O12-1)
+### 4.2 HTTP transport (O12-1) — REWRITE AT PHASE START
+
+> **Do not execute the bullets below as written.** O12-1 (`docs/OWNER_ANSWERS.md`) chose
+> **(b) a mature framework (FastAPI-class) in an optional `api` extra**, confined to
+> `backend/api`, with domain services framework-free. The stdlib sketch that follows is the
+> pre-decision draft, kept only as a record of what the section covered.
+>
+> **Rewrite at phase start.** The rewritten section must cover, at minimum:
+> 1. **Dependency policy (`docs/OWNER_ANSWERS.md`).** The core backend stays
+>    dependency-free; the framework and its server are allowed only as an optional `api`
+>    extra in `pyproject.toml`, pinned to an exact version at least two weeks old, imported
+>    only under `backend/api`, with all core tests passing without the extra installed. A
+>    missing extra must fail with a clear configuration error, not an import error in the
+>    domain packages.
+> 2. **Import direction.** `backend/api` may import domain services; no domain module may
+>    import the framework. Enforce it with an import test (AST/regex over `backend/`).
+> 3. **App factory and lifespan.** One `create_app(...)` taking `connection_factory`,
+>    `now`, `config`; no module-level app, no global connection; the worker is never started
+>    by the API process.
+> 4. **Dependency-injection seam** replacing `handler(request, context)`: a per-request
+>    dependency that opens one SQLite connection, sets WAL/foreign keys as today, closes it,
+>    and attaches the authenticated person; handlers stay thin service calls.
+> 5. **Validation and errors.** Framework request models for bodies/params (still rejecting
+>    unknown fields), an exception handler mapping `ApiError` and domain exceptions to the
+>    same status/code table (404/403/409/422/401/429/500), request IDs, and no stack traces,
+>    SQL, paths or secrets in responses.
+> 6. **Auth dependency.** Bearer token → `authenticate` → 401/403 with denial recording;
+>    route-level checks remain defence in depth, never the only check.
+> 7. **Route surface unchanged.** The §4.3 paths, methods and status codes stay the contract
+>    (O12-2); the rewrite changes transport mechanics only.
+> 8. **Tests.** Handler-level tests stay framework-free where possible; the localhost smoke
+>    test uses the framework's test client or a real ephemeral-port server; the suite must
+>    still pass on a clean install with the `api` extra absent for every non-API test.
+> 9. **Deployment.** `python -m backend.api` (or the framework's runner) reads host/port
+>    from config; TLS/hosting stays O12-6; no auto-migrate on start.
+
+The pre-decision draft, for reference only:
 
 - Recommended default: stdlib `http.server.ThreadingHTTPServer` +
   `BaseHTTPRequestHandler`, a small regex routing table, `json` bodies, one SQLite
   connection per request (`connect(path)`), `Content-Type: application/json; charset=utf-8`.
   No dependency; fits one backend host (PB-4).
-- Alternative: a FastAPI-class dependency. It adds install/deploy weight and is not
-  needed for twelve endpoints; the owner decides (O12-1).
+- ~~Alternative: a FastAPI-class dependency. It adds install/deploy weight and is not
+  needed for twelve endpoints; the owner decides (O12-1).~~ Superseded: O12-1 chose the
+  FastAPI-class framework in the optional `api` extra.
 - Handlers are pure functions `handler(request, context) -> (status, payload)` where
   `context` carries the connection, `now` and the authenticated person. This makes the
   whole surface testable without sockets; one localhost smoke test exercises the real
@@ -386,7 +425,7 @@ without a matrix classification (test enforces route coverage).
 
 | ID | Question | Options | Recommendation |
 |---|---|---|---|
-| O12-1 | HTTP framework | (a) stdlib `http.server` (no dependency); (b) FastAPI-class dependency | (a): 12 endpoints, one host, zero install weight |
+| O12-1 | HTTP framework | **ANSWERED (`docs/OWNER_ANSWERS.md`): (b) a mature framework (FastAPI-class) in an optional `api` extra, confined to `backend/api`, domain services framework-free** | decided; §4.2 is marked "rewrite at phase start" and must be rewritten before W2 |
 | O12-2 | Approve the minimum route surface (§4.3) as the mobile contract | approve / amend | approve; it mirrors existing services |
 | O12-3 | Session lifetime, OTP expiry, attempts, rate limits | (a) 12 h, 5 min, 5, 3/15 min; (b) owner values | (a), configuration-only |
 | O12-4 | Roster changes have no API in the MVP; Admin changes are operational | (a) confirm; (b) add an Admin endpoint | (a), FR-ROS-02; adding a route needs a new requirement |

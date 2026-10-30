@@ -5,6 +5,22 @@ remember the planning session. Do exactly this phase; do not start Phase 8.
 
 ---
 
+## SESSION BUDGET PROTOCOL
+
+- **One workstream per session.** Run exactly one workstream (§7) unless the owner says
+  otherwise; finish it at its checkpoint, then stop.
+- **Progress log.** After each checkpoint, append one line to `docs/PHASE7_PROGRESS.md`
+  (create the file if missing) with the checkpoint, the real commands run and their actual
+  outcomes. Never write a result that was not observed.
+- **No automatic continuation.** Never start the next workstream without being told.
+- **Green or stop.** If the tree is not green at a checkpoint (plain `pytest`, ruff, mypy,
+  migrations apply and re-apply, no staged changes), stop and report the failing command
+  and its output; do not paper over it and do not continue.
+- **Owner commits.** The owner commits at each green checkpoint; the agent never stages,
+  commits or pushes.
+
+---
+
 ## 0. What you are doing
 
 Execute **Phase 7** of ASEC as approved in `docs/PHASE7_PLAN.md`: the relevance-request
@@ -139,39 +155,45 @@ that sentence verbatim in the report and take the plan's recommendation.
 O7-1  Run 0016-0018 as a pre-roster window (no real roster rows must survive)?
       Options: (a) confirm pre-roster window; (b) allow a data-mapping script.
       Plan recommendation: (a); if real rows exist, stop and map deliberately.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Confirm: run 0016–0018 as a pre-roster window. If real roster rows
+      exist, stop.
 
 O7-2  Authorize the mechanical updates of pinned Phase 6 tests forced by PB-3/PB-6?
       Options: (a) authorize; (b) keep old expectations and delay PB-3/PB-6.
       Plan recommendation: (a). Needed before W3.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Authorized: mechanical updates of Phase 6 pinned tests forced by
+      PB-3 and PB-6, each with a one-line reason citing the requirement.
 
 O7-3  May an authorized user accept/deny on an assignee's behalf (FR-TSK-05)?
       Options: (a) Admin only, recorded in history; (b) creator; (c) self-action only.
       Plan recommendation: (c) for now, recorded as a gap; (a) if the owner wants the
       FR-TSK-05 sentence fully exercised.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Admin only may accept or deny on an assignee's behalf, recorded in
+      history with an on-behalf flag and the Admin as actor. Nobody else.
 
 O7-4  Cancel authority: FR-TSK-08 says creator, FR-TSK-16/matrix add Head/Admin.
       Options: (a) creator + Head of responsible vertical + Admin; (b) creator only.
       Plan recommendation: (a), consistent with the FR-AUT-04 baseline matrix.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Cancel authority: creator, Head of the responsible vertical, and
+      Admin.
 
 O7-5  Admin work-status override (FR-TSK-06 says Admin; matrix cell is "-").
       Options: (a) Admin override; (b) assignee only.
       Plan recommendation: (a), per FR-TSK-06.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Admin may override work status, recorded in history.
 
 O7-6  Role CHECK vs the Phase 6 case-insensitive Admin test (`role='aDmIn'`).
       Options: (a) strict CHECK + rewrite the test to prove policy matching; (b) a
       case-insensitive CHECK.
       Plan recommendation: (a).
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Strict role CHECK (`Admin`, `Head`, `AH`, `Volunteer`); the roster
+      loader normalizes case; rewrite the Phase 6 case-insensitive Admin test to prove
+      policy matching.
 
 O7-7  Optional test-typing cleanup (89 pre-existing mypy errors in tests).
       Options: (a) defer; (b) separate slice now.
       Plan recommendation: (a) defer; the mypy gate stays backend-only.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) Defer the test-typing cleanup.
 ```
 
 Gates: **W3 needs O7-1, O7-2, O7-6.** **W6 needs O7-3, O7-4, O7-5.** W1 and W2 need

@@ -5,6 +5,22 @@ do not start Phase 12.
 
 ---
 
+## SESSION BUDGET PROTOCOL
+
+- **One workstream per session.** Run exactly one workstream (§7) unless the owner says
+  otherwise; finish it at its checkpoint, then stop.
+- **Progress log.** After each checkpoint, append one line to `docs/PHASE11_PROGRESS.md`
+  (create the file if missing) with the checkpoint, the real commands run and their actual
+  outcomes. Never write a result that was not observed.
+- **No automatic continuation.** Never start the next workstream without being told.
+- **Green or stop.** If the tree is not green at a checkpoint (plain `pytest`, ruff, mypy,
+  migrations apply and re-apply, no staged changes), stop and report the failing command
+  and its output; do not paper over it and do not continue.
+- **Owner commits.** The owner commits at each green checkpoint; the agent never stages,
+  commits or pushes.
+
+---
+
 ## 0. What you are doing
 
 Execute **Phase 11** of ASEC as approved in `docs/PHASE11_PLAN.md`: state-accurate
@@ -63,7 +79,8 @@ If the tree is red, **stop and report**.
 - No credential, token, phone number or OTP code in the repo, tests, fixtures, logs,
   attempt errors, notification bodies or reports. Fake values in tests only.
 - Do not edit `docs/SRS.md` or `docs/DECISIONS.md`.
-- **No new dependency** unless O11-2 approves one for FCM v1.
+- **Dependencies:** O11-2 approved FCM HTTP v1 only as an optional `push` extra behind
+  `PushSender` (exact pin, one module, core tests green without it). No other dependency.
 - Delivery is **always after** the domain transaction committed. A delivery failure never
   rolls back or blocks the change that caused it (FR-NOT-04).
 - **No second notification row on retry** (FR-NOT-05). No batching (FR-NOT-02).
@@ -113,30 +130,38 @@ O11-1 OTP/SMS provider and credentials; resolve FR-ROS-03 (SMS to roster phone) 
       code for testing only.
       Plan recommendation: (a), matching the FR-ROS-03 wording; owner supplies
       credentials. Needed before W5.
-      OWNER ANSWER:
+      OWNER ANSWER: (c) Build the OTP sender interface with a development sender now.
+      **OWNER SUPPLIES** the SMS provider before go-live (in India, bulk SMS usually needs
+      sender and template registration, so start early). FR-ROS-03 needs SMS to the roster
+      phone because the app has no device token before sign-in. STOP GATE for live OTP;
+      W5's interface and development sender proceed.
 
 O11-2 FCM mode.
       Options: (a) legacy HTTP server key (no dependency, deprecated); (b) HTTP v1 with
       an approved google-auth/cryptography dependency; (c) owner-run push gateway.
       Plan recommendation: (a) only if the deprecation risk is accepted; otherwise (b).
       Needed before W4.
-      OWNER ANSWER:
+      OWNER ANSWER: (b) FCM HTTP v1 through an optional `push` extra (the signing needs a
+      package the standard library lacks), isolated behind `PushSender`. I believe the
+      legacy FCM HTTP API was shut down in 2024; confirm in the Firebase docs before
+      building.
 
 O11-3 Retry policy and batch limit.
       Options: (a) 5 attempts, 5 s base backoff, 5 min cap, 50 per batch; (b) owner
       values.
       Plan recommendation: (a), configuration-only. Needed before W2.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) 5 attempts, 5 s base, 5 min cap, 50 per batch.
 
 O11-4 Confirm a VERTICAL announcement goes to all active members of the vertical.
       Options: (a) all active members; (b) volunteers only.
       Plan recommendation: (a), the literal FR-REV-10 reading. Needed before W3.
-      OWNER ANSWER:
+      OWNER ANSWER: (a) The `VERTICAL` audience is all active members of the vertical.
 
 O11-5 Deep-link scheme for the mobile app (out of repo).
       Plan recommendation: owner supplies; until then Phase 11 emits an opaque path
       string such as /review/{proposal_id}. Needed before closing W1's wording tests.
-      OWNER ANSWER:
+      OWNER ANSWER: **OWNER SUPPLIES** the app's deep-link scheme later; use an opaque path
+      until then. STOP GATE only for the real scheme; opaque paths ship now.
 ```
 
 Unanswered items that a workstream needs are a stop, not a guess. W1–W3 work with (a)

@@ -29,8 +29,8 @@ Real command output observed at the start of this planning session:
 | Phase 6 committed | yes — `fb5263d` contains `backend/review.py`, `0015`, both test files and §15 |
 | Phase 6 implementation record | §15.1–§15.8 filled (files, totals, mutation battery, audit, closing fixes) |
 
-Documentation observation (not a blocker): §15.8's heading still says "uncommitted tree at
-`d83511d`", while the work is now committed in `fb5263d`. Phase 6 is committed; §15 is
+Documentation observation (resolved 2026-10-30): §15.8's heading said "uncommitted tree at
+`d83511d`"; it now says "committed in `fb5263d`". Phase 6 is committed; §15 is
 filled. Every phase plan repeats a "re-verify at execution" baseline.
 
 ---
@@ -165,15 +165,18 @@ Not migrated: Phase 8 uses existing `approval_request`/`approval_recipient`/
    Otherwise a slow model stalls every writer and can exceed the P95 targets.
 5. **The 30 s P95 target includes bucket wait.** With M=30 s and C=2 s the bucket alone can
    consume 32 s. This is an SRS ambiguity (DECISIONS §D); benchmark results must report it,
-   not hide it. OWNER decision at Phase 10.
+   not hide it. O10-6 answered: keep the 30 s target in code, document the wait, and the
+   owner later edits the SRS to measure from bucket close.
 6. **Duplicate notifications.** Retries must key on `notification.dedupe_key`. Any new
    event type added in 7/8/11 must go through `notification_events` so one key format
    exists.
 7. **Announcement audience drift.** PB-6 replaces free-text scope. Phase 11 fan-out must
    use `audience_type`/`audience_ah_person_id`; Phase 6's `AH_VOLUNTEERS` vertical
    approximation must not survive into delivery.
-8. **AI adapter dependencies.** No runtime dependency exists today. Any HTTP/WebSocket or
-   framework addition needs an OWNER decision; the default plan uses the standard library.
+8. **Adapter/framework dependencies.** No runtime dependency exists today. The dependency
+   policy in `docs/OWNER_ANSWERS.md` allows only optional extras (`push`, `api`), exact-pinned,
+   confined to one module, with core tests green without them; anything else needs an OWNER
+   decision.
 9. **Evaluation data is real personal data.** Labelled sets stay out of the repository or
    are synthetic/redacted; masking applies before any hosted or self-hosted call; the
    archive-only retention default (`DECISIONS` §B) governs training use.
@@ -181,9 +184,9 @@ Not migrated: Phase 8 uses existing `approval_request`/`approval_recipient`/
     needs another migration appends 0025+ and updates this table before writing it.
 11. **Test typing debt.** `mypy` covers `backend` only; 89 pre-existing errors in tests are
     known. A cleanup slice is optional and never blocks a phase.
-12. **Framework decision late.** Phase 12 cannot start until the HTTP framework/dependency
-    question is answered. Phase 11's OTP interface and Phase 10's admin eval views should
-    not assume one.
+12. **Framework choice.** Answered by O12-1: FastAPI-class framework in an optional `api`
+    extra confined to `backend/api`. Phase 12's §4.2 must be rewritten at phase start before
+    W2; Phase 11's OTP interface and Phase 10's admin eval views stay framework-free.
 
 ---
 
@@ -392,48 +395,64 @@ Count check: 192 IDs listed (12+12+8+17+10+16+6+7+3+8+7+10+7+5+7+3+2+3+5+4+8+10+
 
 ---
 
-## 7. Owner inputs needed before each phase (single consolidated table)
+## 7. Owner inputs — answers (single consolidated table)
 
 "OWNER" means only the owner can supply/approve it; agents must not decide it. Items
 already decided in `docs/DECISIONS.md` are not repeated. The `Oxx-n` IDs are the same IDs
-used in each phase plan §9 and in each execution prompt's `OWNER DECISIONS` block.
+used in each phase plan §9 and in each execution prompt's `OWNER DECISIONS` block. **Every
+row below is answered in `docs/OWNER_ANSWERS.md` (29 Oct 2026); the Answer column quotes
+it.** Items marked OWNER SUPPLIES remain stop gates and are collected in §7.1.
 
-| ID | Phase | Owner input | Options → recommendation | Gates |
+| ID | Phase | Owner input | Answer (`docs/OWNER_ANSWERS.md`) | Gates |
 |---|---|---|---|---|
-| O7-1 | 7 | Confirm the schema window (0016–0018) runs before any roster load, no real roster rows must survive | (a) confirm pre-roster window → (a); (b) allow a data-mapping script | W3 |
-| O7-2 | 7 | Authorize the mechanical Phase 6 pinned-test updates forced by PB-3/PB-6 | (a) authorize → (a); (b) delay PB-3/PB-6 | W3 |
-| O7-3 | 7 | May an authorized user accept/deny on an assignee's behalf (FR-TSK-05)? No matrix cell exists | (a) Admin, recorded; (b) creator; (c) self-action only → (c) now, recorded as gap | W6 |
-| O7-4 | 7 | Cancel authority: FR-TSK-08 creator vs FR-TSK-16/matrix Head/Admin | (a) creator + Head + Admin → (a); (b) creator only | W6 |
-| O7-5 | 7 | Admin work-status override (FR-TSK-06 says Admin; matrix cell "—") | (a) Admin override → (a); (b) assignee only | W6 |
-| O7-6 | 7 | Role CHECK vs the Phase 6 case-insensitive Admin test | (a) strict CHECK + policy test → (a); (b) case-insensitive CHECK | W3 |
-| O7-7 | 7 | Optional test-typing cleanup (89 pre-existing errors) | (a) defer → (a); (b) separate slice | none |
-| O8-1 | 8 | May Admin decide any pending request without being a recipient? | (a) Admin override → (a), matrix row; (b) recipients only | W1 |
-| O8-2 | 8 | Recipient whose current role/vertical changed: snapshot or current? | (a) current role/vertical → (a); (b) snapshot only | W1 |
-| O8-3 | 8 | Late decision attempt: silent no-op or recorded? | (a) no-op → (a), FR-XV-04; (b) record | W2 |
-| O9-1 | 9 | Discord intake implementation | (a) stdlib REST polling → (a); (b) stdlib gateway WS; (c) approved dependency | W5 |
-| O9-2 | 9 | Supply a bot token + test guild/channel via secure config; confirm no token in repo | required | W5 |
-| O9-3 | 9 | Worker deployment, interval/backoff defaults | (a) 2 s, 1–60 s → (a); (b) owner values | W3 |
-| O9-4 | 9 | Approve the replay export schema (JSONL field set) and indicative rules | approve / amend → approve | W4 |
-| O9-5 | 9 | Clock row on a replay-first database | (a) no seed, first caller sets mode → (a); (b) seed LIVE | W2 |
-| O9-6 | 9 | Default part sizes (40 relevance messages, 20 proposal candidates) | (a) approve → (a); (b) after Phase 10 benchmark | W6 |
-| O10-1 | 10 | Approve the adapter wire contract and endpoint paths | (a) approve → (a); (b) owner contract | W1 |
-| O10-2 | 10 | Supply/approve the labelled evaluation set, its location, who labels it, minimum size | (a) owner labels → (a); (b) named human | W4–W7 |
-| O10-3 | 10 | Accuracy/recall thresholds for AI-06 and the final model choice | (a) thresholds now → (a); (b) after first benchmark | W7 |
-| O10-4 | 10 | Which self-hosted models/hardware; confirm hosted models are reference-only | owner supplies | W7 |
-| O10-5 | 10 | Confirm archive-only retention, no training on festival chat | (a) archive only → (a); (b) other | none |
-| O10-6 | 10 | Accept/reject the 30 s P95 target given a 17–32 s bucket wait | (a) relax; (b) shorten M/C; (c) keep + document → (c) | report |
-| O11-1 | 11 | OTP/SMS provider + credentials; resolve FR-ROS-03 SMS vs EIR-04 FCM | (a) SMS + FCM → (a); (b) FCM-only; (c) defer, in-app code for tests | W5 |
-| O11-2 | 11 | FCM mode | (a) legacy HTTP key (deprecated) ; (b) HTTP v1 + approved dependency; (c) owner gateway → (a) only if deprecation accepted, else (b) | W4 |
-| O11-3 | 11 | Retry policy and batch limit | (a) 5 attempts, 5 s base, 5 min cap, 50/batch → (a); (b) owner values | W2 |
-| O11-4 | 11 | `VERTICAL` announcement audience = all active members or volunteers only? | (a) all active members → (a); (b) volunteers | W3 |
-| O11-5 | 11 | Deep-link scheme for the mobile app (out of repo) | owner supplies; opaque path until then | W1 |
-| O12-1 | 12 | HTTP framework | (a) stdlib `http.server` → (a); (b) FastAPI-class dependency | W2 |
-| O12-2 | 12 | Approve the minimum route surface as the mobile contract | approve / amend → approve | W3 |
-| O12-3 | 12 | Session lifetime, OTP expiry, attempts, rate limits | (a) 12 h / 5 min / 5 / 3 per 15 min → (a); (b) owner values | W1 |
-| O12-4 | 12 | Confirm roster changes have no API in the MVP | (a) confirm → (a); (b) add an Admin endpoint | W3 |
-| O12-5 | 12 | Approve the FR-AUT-04 matrix as the production baseline | approve / amend → approve | W5 |
-| O12-6 | 12 | Mobile app repo/contract ownership, TLS/hosting | owner supplies | client connection |
-| O12-7 | 12 | Retention for sessions/denials/attempts | (a) keep + archive → (a); (b) other | none |
+| O7-1 | 7 | Confirm the schema window (0016–0018) runs before any roster load | (a) Confirm: run 0016–0018 as a pre-roster window. If real roster rows exist, stop. | W3 |
+| O7-2 | 7 | Authorize the mechanical Phase 6 pinned-test updates forced by PB-3/PB-6 | (a) Authorized: mechanical updates of Phase 6 pinned tests forced by PB-3 and PB-6, each with a one-line reason citing the requirement. | W3 |
+| O7-3 | 7 | May an authorized user accept/deny on an assignee's behalf (FR-TSK-05)? | (a) Admin only may accept or deny on an assignee's behalf, recorded in history with an on-behalf flag and the Admin as actor. Nobody else. | W6 |
+| O7-4 | 7 | Cancel authority: FR-TSK-08 creator vs FR-TSK-16/matrix Head/Admin | (a) Cancel authority: creator, Head of the responsible vertical, and Admin. | W6 |
+| O7-5 | 7 | Admin work-status override (FR-TSK-06 says Admin; matrix cell "—") | (a) Admin may override work status, recorded in history. | W6 |
+| O7-6 | 7 | Role CHECK vs the Phase 6 case-insensitive Admin test | (a) Strict role CHECK (`Admin`, `Head`, `AH`, `Volunteer`); the roster loader normalizes case; rewrite the Phase 6 case-insensitive Admin test to prove policy matching. | W3 |
+| O7-7 | 7 | Optional test-typing cleanup (89 pre-existing errors) | (a) Defer the test-typing cleanup. | none |
+| O8-1 | 8 | May Admin decide any pending request without being a recipient? | (a) Admin may decide any pending request without being a recipient. Add the matrix row. | W1 |
+| O8-2 | 8 | Recipient whose current role/vertical changed: snapshot or current? | (a) Authority uses the person's current role and vertical (FR-AUT-05); the recipient snapshot only records who was asked. | W1 |
+| O8-3 | 8 | Late decision attempt: silent no-op or recorded? | (a) A late decision attempt writes nothing and returns the existing decision (FR-XV-04: later attempts see it). | W2 |
+| O9-1 | 9 | Discord intake implementation | (a) Stdlib REST polling with an injected transport, as planned. A gateway client is post-MVP if latency or rate limits hurt. | W5 |
+| O9-2 | 9 | Supply a bot token + test guild/channel via secure config | **OWNER SUPPLIES** the bot token (environment variable only), a test server and channel, and enables the Message Content intent in the Discord developer portal. Reset the old token first. | W5 |
+| O9-3 | 9 | Worker deployment, interval/backoff defaults | (a) 2 s interval, backoff 1–60 s. | W3 |
+| O9-4 | 9 | Approve the replay export schema and indicative rules | Approve, **with an amendment**: the importer must take a sender mapping (export sender label → Discord user ID) and a group mapping (export group → channel), because WhatsApp exports have no Discord IDs. Unmapped senders become UNKNOWN_SENDER and are counted in the batch row. Message IDs for exports without IDs are derived deterministically (hash of group, time, sender label, content). | W4 |
+| O9-5 | 9 | Clock row on a replay-first database | (a) No seed; the first caller sets the clock mode. | W2 |
+| O9-6 | 9 | Default part sizes (40 relevance messages, 20 proposal candidates) | (a) Defaults 40 relevance messages and 20 proposal candidates per part; revisit after the Phase 10 benchmark. | W6 |
+| O10-1 | 10 | Approve the adapter wire contract and endpoint paths | (a) Approve the wire contract as written. | W1 |
+| O10-2 | 10 | Supply/approve the labelled evaluation set, location, labeller, minimum size | **OWNER SUPPLIES** the labelling work: at least 300 masked messages from the sample, including at least 80 RELEVANT and at least 60 hard negatives (jokes, status reports, banter), each with the sender's role and, for relevant ones, the expected proposal. The assistant helps label; the owner confirms. | W4–W7 |
+| O10-3 | 10 | Accuracy/recall thresholds for AI-06 and the final model choice | Use the SRS section 7 targets: relevance recall at least 95% and precision at least 80%; proposal type and assignment mode at least 95% each; assignee and task type at least 90% each; proposal acceptance at least 80%. **The plan is wrong that none exist.** | W7 |
+| O10-4 | 10 | Which self-hosted models/hardware; hosted models reference-only | Start with the owner's Windows PC (16 GB RAM, NVIDIA 4–8 GB VRAM) running one small model (about 4B) and one 7–8B model through Ollama, and a larger open model of about 14B in a Colab notebook for the quality ceiling. A hosted model (Gemini) only on masked synthetic text, as a baseline. The owner confirms the exact model tags in the Ollama library. | W7 |
+| O10-5 | 10 | Confirm archive-only retention, no training on festival chat | (a) Archive only; no training on festival chat without a consent plan. | none |
+| O10-6 | 10 | Accept/reject the 30 s P95 target given a 17–32 s bucket wait | (c) Keep the 30 s target in code and document that the bucket wait alone is 17–32 s. The owner later edits the SRS to measure from bucket close. | report |
+| O11-1 | 11 | OTP/SMS provider + credentials; resolve FR-ROS-03 SMS vs EIR-04 FCM | (c) Build the OTP sender interface with a development sender now. **OWNER SUPPLIES** the SMS provider before go-live (in India, bulk SMS usually needs sender and template registration, so start early). FR-ROS-03 needs SMS to the roster phone because the app has no device token before sign-in. | W5 |
+| O11-2 | 11 | FCM mode | (b) FCM HTTP v1 through an optional `push` extra (the signing needs a package the standard library lacks), isolated behind `PushSender`. I believe the legacy FCM HTTP API was shut down in 2024; confirm in the Firebase docs before building. | W4 |
+| O11-3 | 11 | Retry policy and batch limit | (a) 5 attempts, 5 s base, 5 min cap, 50 per batch. | W2 |
+| O11-4 | 11 | `VERTICAL` announcement audience = all active members or volunteers only? | (a) The `VERTICAL` audience is all active members of the vertical. | W3 |
+| O11-5 | 11 | Deep-link scheme for the mobile app (out of repo) | **OWNER SUPPLIES** the app's deep-link scheme later; use an opaque path until then. | W1 |
+| O12-1 | 12 | HTTP framework | (b) A mature framework (FastAPI-class) in an optional `api` extra, confined to `backend/api`, domain services framework-free. The Phase 12 plan needs a rewrite of its server section at phase start. | W2 |
+| O12-2 | 12 | Approve the minimum route surface as the mobile contract | Approve the 12-endpoint surface, subject to a quick review at phase start. | W3 |
+| O12-3 | 12 | Session lifetime, OTP expiry, attempts, rate limits | (a) 12 h sessions, 5 min OTP, 5 attempts, 3 requests per 15 min. | W1 |
+| O12-4 | 12 | Confirm roster changes have no API in the MVP | (a) No roster API in the MVP; the roster is loaded by script before the festival. | W3 |
+| O12-5 | 12 | Approve the FR-AUT-04 matrix as the production baseline | Approve the FR-AUT-04 matrix as the baseline **including the cells added by O7-3, O7-5 and O8-1**. | W5 |
+| O12-6 | 12 | Mobile app repo/contract ownership, TLS/hosting | **OWNER SUPPLIES** the app repo, contract ownership and the TLS or hosting arrangement. | client connection |
+| O12-7 | 12 | Retention for sessions/denials/attempts | (a) Keep sessions, denials and attempts as evidence; archive only. | none |
+
+### 7.1 OWNER SUPPLIES items (stop gates, one table)
+
+These cannot be delegated to an agent. The workstream that needs one stops at the gate and
+reports; everything not dependent on it continues. O10-4 is owner-confirmed (model tags) but
+is not marked OWNER SUPPLIES and is not a hard stop gate.
+
+| ID | Phase that needs it | What the owner must supply | Gate |
+|---|---|---|---|
+| O9-2 | 9 | Bot token (environment variable only), a test server and channel, Message Content intent enabled in the Discord developer portal; reset the old token first | W5 live smoke only |
+| O10-2 | 10 | Labelled set: ≥ 300 masked messages, ≥ 80 RELEVANT, ≥ 60 hard negatives, sender role, expected proposal for relevant ones; owner confirms the assistant's labelling | W4–W7 production report |
+| O11-1 | 11 | SMS provider account and credentials before go-live (India: sender/template registration) | W5 live OTP only |
+| O11-5 | 11 | The app's deep-link scheme | W1 wording tests may ship with an opaque path; real scheme later |
+| O12-6 | 12 | Mobile app repo, contract ownership, TLS/hosting arrangement | before any real client connects |
 
 ---
 
@@ -498,14 +517,21 @@ slice instead.
   of repo), NFR-REL-06 (functions in 3/9, admin view in 12), FR-AUT-06 (recorder in 6,
   every route in 12), EIR-03 (request shape in 7, full contract in 10), NFR-CON-02 (accept
   in 6, claims in 7, decision in 8).
-- **Contradictions that remain the owner's** (not resolvable by planning): the 30 s P95
-  target vs a 17–32 s bucket wait; OTP delivery via SMS (figures, FR-ROS-03) vs FCM only
-  (EIR-04); no accuracy target for AI-06; FR-UI mobile app out of repo; FR-TSK-08 vs
-  FR-TSK-16 cancel rights; Admin status right (FR-TSK-06 vs a "—" matrix cell); roster
-  edits (FR-ROS-02 vs the matrix's "Change roster data — Admin Yes"); roll-number
-  sign-in blocked when a roster phone is missing (PB-5 makes phone NOT NULL, which
-  removes the fallback question but not the operational one).
-- Owner inputs are consolidated in §7 (34 items, O7-1 … O12-7); each phase plan repeats
-  only its own items with options and recommendations, and each execution prompt carries
-  them as a fill-in block.
+- **Contradictions resolved or still the owner's.** Resolved 2026-10-29 by
+  `docs/OWNER_ANSWERS.md`: the AI-06 quality targets **do exist** in SRS §7 (recall ≥ 95%,
+  precision ≥ 80%, proposal type and assignment mode ≥ 95%, assignee and task type ≥ 90%,
+  acceptance ≥ 80%) — an earlier plan statement that none existed was wrong and is
+  corrected in `PHASE10_PLAN.md`; OTP delivery is SMS to the roster phone (FR-ROS-03, with
+  FCM for push, EIR-04) — both channels, not a contradiction; FR-TSK-08 vs FR-TSK-16 is
+  settled as creator + Head of the responsible vertical + Admin (O7-4); the Admin work-status
+  right is settled as an Admin override (O7-5); roster edits have no API in the MVP (O12-4).
+  Still outstanding for the owner: the 30 s P95 target vs a 17–32 s bucket wait (O10-6 keeps
+  the target and documents the wait; the owner later edits the SRS to measure from bucket
+  close); FR-UI mobile app out of repo; roll-number sign-in blocked when a roster phone is
+  missing (PB-5 makes phone NOT NULL, which removes the fallback question but not the
+  operational one).
+- Owner inputs are consolidated in §7 (34 items, O7-1 … O12-7), each with its answer from
+  `docs/OWNER_ANSWERS.md`; §7.1 lists the five OWNER SUPPLIES stop gates by phase. Each
+  phase plan repeats only its own items, and each execution prompt carries them with the
+  answer filled in.
 - Migration numbering 0016–0024 is stable and disjoint; Phase 8 adds no migration.
