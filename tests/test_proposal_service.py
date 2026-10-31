@@ -47,6 +47,7 @@ from backend.proposals import (
     ProposalMessage,
     ProposalOutcome,
     ProposalPassError,
+    ProposalPolicy,
     ProposalResponse,
     ProposalServiceError,
     load_proposal_policy,
@@ -261,6 +262,8 @@ def _expected_scenario(
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     person_id = _person(conn, 5, "Arjun", "5001", role=role)
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, person_id, 1)
     bucket_id = _bucket(conn, 1)
     message_ids: list[int] = []
     for index in range(1, message_count + 1):
@@ -301,6 +304,8 @@ def _resolution_scenario(
     _vertical(conn, 2, "Sports")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001")  # eligible sender
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     neha = _person(conn, 7, "Neha", "2002", active=mention_member_active)
     _membership_vertical(conn, neha, 1)
     second_member_id: int = 0
@@ -562,6 +567,8 @@ def test_masking_before_call_and_source_untouched(
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     person_id = _person(conn, 5, "Arjun", "5001")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, person_id, 1)
     bucket_id = _bucket(conn, 1)
     mid = _message(
         conn,
@@ -596,6 +603,8 @@ def test_mention_handle_assignment_is_deterministic_and_ordered(
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     bucket_id = _bucket(conn, 1)
     mid_a = _message(
         conn, 1, 1, sender_person_id=5, sender_discord_user_id="5001"
@@ -656,6 +665,8 @@ def test_defect1_discord_ids_never_reach_model(conn: sqlite3.Connection) -> None
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001", role="AH")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     _person(conn, 7, "Neha", "2002", role="AH")
     _person(conn, 8, "Rohan", "2003", role="AH")
     bucket_id = _bucket(conn, 1)
@@ -773,6 +784,8 @@ def test_defect1_stored_artifact_reconstructs_and_mention_resolves(
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001", role="AH")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     _person(conn, 7, "Neha", "2002", role="Volunteer")
     _person(conn, 9, "Karan", "5544332211", role="Volunteer")
     bucket_id = _bucket(conn, 1)
@@ -825,6 +838,8 @@ def test_defect1_replies_resolve_to_internal_ids_or_null(
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001", role="AH")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     bucket_id = _bucket(conn, 1)
     mid1 = _message(
         conn,
@@ -982,6 +997,8 @@ def test_defect3_non_ascii_name_resolution(conn: sqlite3.Connection) -> None:
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001", role="AH")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     etienne = _person(conn, 12, "Étienne", "9001", role="Volunteer")
     _membership_vertical(conn, etienne, 1)
 
@@ -1077,6 +1094,8 @@ def test_role_eligibility_vocabulary(
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001", role=role)
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     bucket_id = _bucket(conn, 1)
     mid = _message(conn, 1, 1, sender_person_id=5, sender_discord_user_id="5001")
     _membership(conn, bucket_id, mid, 1)
@@ -1122,11 +1141,32 @@ def test_unknown_sender_is_not_eligible(conn: sqlite3.Connection) -> None:
     assert generator.requests == []
 
 
-def test_membership_flag_off_is_the_phase5_default(
+def test_membership_is_on_by_default_for_outside_vertical_sender(
     conn: sqlite3.Connection,
 ) -> None:
-    """G1b default off: an eligible sender outside `person_vertical` still
-    yields candidates in the default code path."""
+    """FR-PRP-02 default ON (Phase 7 S2): an eligible AH sender outside the
+    group's source vertical produces no proposal under the default policy."""
+    _vertical(conn, 1, "Tech")
+    _group(conn, 1, vertical_id=1)
+    _person(conn, 5, "Arjun", "5001")
+    bucket_id = _bucket(conn, 1)
+    mid = _message(conn, 1, 1, sender_person_id=5, sender_discord_user_id="5001")
+    _membership(conn, bucket_id, mid, 1)
+    _relevance_success(conn, bucket_id, [mid])
+    generator = ScriptedGenerator([])
+
+    outcome = run_proposal_pass(conn, generator)
+
+    assert ProposalPolicy().require_source_vertical_membership is True
+    assert outcome.outcomes == ()
+    assert generator.requests == []
+
+
+def test_membership_zero_flag_keeps_the_phase5_escape_hatch(
+    conn: sqlite3.Connection,
+) -> None:
+    """FR-PRP-02: ``PROPOSAL_REQUIRE_SOURCE_VERTICAL_MEMBERSHIP=0`` still
+    disables the membership requirement (the Phase 5 behaviour)."""
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001")
@@ -1144,6 +1184,7 @@ def test_membership_flag_off_is_the_phase5_default(
         ),
     )
     assert result.outcomes[0].status is ProposalOutcome.GENERATED
+    assert generator.requests != []
 
 
 def test_membership_flag_on_requires_source_vertical_membership(
@@ -1200,7 +1241,13 @@ def test_load_proposal_policy_defaults_and_config(
     """G1 config keys: roles overridable, membership flag truthiness loud."""
     default = load_proposal_policy(None)
     assert default.eligible_roles == ("AH", "Head")
-    assert default.require_source_vertical_membership is False
+    # FR-PRP-02 default ON (Phase 7 S2).
+    assert default.require_source_vertical_membership is True
+
+    blank = load_proposal_policy(
+        {"PROPOSAL_REQUIRE_SOURCE_VERTICAL_MEMBERSHIP": "  "}
+    )
+    assert blank.require_source_vertical_membership is True
 
     configured = load_proposal_policy(
         {
@@ -1942,6 +1989,8 @@ def test_mention_route_flagged_without_roster_person(
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     bucket_id = _bucket(conn, 1)
     mid = _message(conn, 1, 1, sender_person_id=5, sender_discord_user_id="5001")
     _membership(conn, bucket_id, mid, 1)
@@ -2123,6 +2172,8 @@ def test_deterministic_order_multiple_buckets(conn: sqlite3.Connection) -> None:
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     ids: list[int] = []
     mids: list[int] = []
     for index in range(3):
@@ -2331,6 +2382,8 @@ def test_concurrent_success_is_first_writer_wins(tmp_path) -> None:
     _vertical(file_conn, 1, "Tech")
     _group(file_conn, 1, vertical_id=1)
     _person(file_conn, 5, "Arjun", "5001")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(file_conn, 5, 1)
     bucket_id = _bucket(file_conn, 1)
     message_ids: list[int] = []
     for index in (1, 2):
@@ -2388,6 +2441,8 @@ def test_locked_database_aborts_pass_loudly(
     _vertical(file_conn, 1, "Tech")
     _group(file_conn, 1, vertical_id=1)
     _person(file_conn, 5, "Arjun", "5001")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(file_conn, 5, 1)
     bucket_id = _bucket(file_conn, 1)
     mid = _message(
         file_conn, 1, 1, sender_person_id=5, sender_discord_user_id="5001"
@@ -2416,6 +2471,8 @@ def test_pass_error_carries_durable_prefix(
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     first_id = _bucket(conn, 1)
     second_id = _bucket(conn, 1)
     mids: list[int] = []
@@ -2604,6 +2661,8 @@ def _backlog_scenario(conn: sqlite3.Connection) -> tuple[int, int, int]:
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     _progress(conn, 1, "2026-01-01T12:00:00+00:00")
     old_bucket = _bucket(
         conn, 1, start_event="2026-01-01T09:00:00+00:00", end_event=None
@@ -2749,6 +2808,8 @@ def test_end_to_end_pipeline_commits_proposals(conn: sqlite3.Connection) -> None
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1, channel="chan-1")
     _person(conn, 5, "Arjun", "5001", role="AH")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     _person(conn, 7, "Neha", "2002")
 
     ingest_events(
@@ -2969,6 +3030,8 @@ def test_role_mention_markup_rewritten_to_role(conn: sqlite3.Connection) -> None
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001", role="AH")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     bucket_id = _bucket(conn, 1)
     role_id = "987654321012345678"
     mid = _message(
@@ -3004,6 +3067,8 @@ def test_channel_mention_markup_rewritten_to_channel(conn: sqlite3.Connection) -
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001", role="AH")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     bucket_id = _bucket(conn, 1)
     channel_id = "876543210987654321"
     mid = _message(
@@ -3039,6 +3104,8 @@ def test_custom_emoji_markup_rewritten_to_name(conn: sqlite3.Connection) -> None
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001", role="AH")
+    # FR-PRP-02 (Phase 7 S2): eligibility requires source-vertical membership.
+    _membership_vertical(conn, 5, 1)
     bucket_id = _bucket(conn, 1)
     static_id = "765432109876543210"
     anim_id = "654321098765432109"

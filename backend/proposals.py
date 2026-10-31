@@ -50,7 +50,6 @@ from __future__ import annotations
 import enum
 import hashlib
 import json
-import re
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
@@ -58,6 +57,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from backend.ai_context import bucket_message_entries
 from backend.bucketing import parse_event_time
 from backend.db.connection import transaction
 from backend.masking import mask_pii
@@ -184,12 +184,6 @@ class ProposalPassError(ProposalServiceError):
         super().__init__(detail)
         self.outcomes = outcomes
         self.generated = generated
-
-
-_ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
-_CHANNEL_MENTION_RE = re.compile(r"<#(\d+)>")
-_CUSTOM_EMOJI_RE = re.compile(r"<a?:([a-zA-Z0-9_]+):\d+>")
-_USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
 
 
 @dataclass(frozen=True)
@@ -356,13 +350,15 @@ class ProposalPolicy:
     """Owner-approved eligibility policy (G1/G1b).
 
     ``eligible_roles`` are matched trimmed and case-insensitively against
-    ``person.role``, with ``person.active = 1`` required and the G1b
-    source-vertical membership flag off by default (owner may flip the
-    default later).
+    ``person.role``, with ``person.active = 1`` required. Source-vertical
+    membership is required by default (FR-PRP-02, Phase 7 S2): an eligible
+    sender produces a proposal only when they belong to the bucket group's
+    source vertical. ``PROPOSAL_REQUIRE_SOURCE_VERTICAL_MEMBERSHIP=0`` is the
+    owner escape hatch that disables the requirement.
     """
 
     eligible_roles: tuple[str, ...] = DEFAULT_ELIGIBLE_ROLE_TOKENS
-    require_source_vertical_membership: bool = False
+    require_source_vertical_membership: bool = True
 
 
 _CONF_TRUTHY = frozenset({"1", "true", "yes", "on"})
@@ -379,11 +375,12 @@ def load_proposal_policy(config: _ConfigLike | None = None) -> ProposalPolicy:
     ``PROPOSAL_ELIGIBLE_ROLES``: comma-separated role tokens (blank or
     unset keeps the ``AH, Head`` default; a string with no token fails
     loud). ``PROPOSAL_REQUIRE_SOURCE_VERTICAL_MEMBERSHIP``: ``1/true/yes/
-    on`` enables it, ``0/false/no/off`` or unset (empty) disables it; any
+    on`` enables it, ``0/false/no/off`` disables it (the owner escape
+    hatch); blank or unset keeps the Phase 7 default (ON, FR-PRP-02); any
     other value fails loud.
     """
     roles: tuple[str, ...] = DEFAULT_ELIGIBLE_ROLE_TOKENS
-    membership = False
+    membership = True
     if config is not None:
         raw_roles = config.get("PROPOSAL_ELIGIBLE_ROLES")
         if raw_roles is not None and raw_roles.strip() != "":
@@ -396,7 +393,7 @@ def load_proposal_policy(config: _ConfigLike | None = None) -> ProposalPolicy:
                 )
             roles = tokens
         raw_membership = config.get("PROPOSAL_REQUIRE_SOURCE_VERTICAL_MEMBERSHIP")
-        if raw_membership is not None:
+        if raw_membership is not None and raw_membership.strip() != "":
             lowered = raw_membership.strip().lower()
             if lowered in _CONF_TRUTHY:
                 membership = True
@@ -699,107 +696,28 @@ def _bucket_entries(
 ) -> tuple[tuple[ProposalMessage, ...], dict[str, str]]:
     """Whole-bucket context entries + the C1 handle map.
 
-    Messages ordered by ascending id; content masked only in the request
-    copy (:func:`backend.masking.mask_pii`) — stored content never
-    touched (DR-03, AC-21). Real Discord markup (<@ID>, <@!ID>, <@&ID>,
-    <#ID>, <:name:ID>, <a:name:ID>) is rewritten in the request copy
-    (C1, DC-18). Raw reply references are replaced with internal message
-    IDs of the same bucket, or None (DC-19). Handles ``@m1, @m2, …``
-    are assigned in order of first appearance scanning bucket members by
-    ascending message id, first from stored message mentions (position,
-    then row id) and then from content user mentions (DC-18).
+    Masking, markup rewriting (C1, DC-18), opaque handle assignment and reply
+    resolution (DC-19) are the shared Phase 7 helper
+    (:func:`backend.ai_context.bucket_message_entries`); this function only
+    projects the neutral entries onto the proposal contract, so the Phase 5
+    suite stays byte-identical. Stored content is never touched (DR-03,
+    AC-21).
     """
-    entries: list[ProposalMessage] = []
-    handle_map: dict[str, str] = {}
-    next_handle = 1
-    handle_for_user: dict[str, str] = {}
-    mention_rows = connection.execute(
-        "SELECT bm2.message_id AS message_id,"
-        "       mm.mentioned_discord_user_id AS user_id,"
-        "       mm.position AS position, mm.id AS mention_row_id"
-        "  FROM message_mention AS mm"
-        "  JOIN bucket_message AS bm2 ON bm2.message_id = mm.message_id"
-        " WHERE bm2.bucket_id = ?"
-        " ORDER BY mm.message_id,"
-        "          (mm.position IS NULL), mm.position, mm.id",
-        (bucket_id,),
-    ).fetchall()
-    handles_by_message: dict[int, list[str]] = {}
-    for row in mention_rows:
-        user_id = str(row["user_id"])
-        handle = handle_for_user.get(user_id)
-        if handle is None:
-            handle = f"@m{next_handle}"
-            next_handle += 1
-            handle_for_user[user_id] = handle
-            handle_map[handle] = user_id
-        handles_by_message.setdefault(int(row["message_id"]), []).append(handle)
-
-    message_rows = connection.execute(
-        "SELECT m.id, m.source_message_id, p.name AS sender_name, m.event_timestamp,"
-        "       m.reply_reference, m.content"
-        "  FROM bucket_message AS bm"
-        "  JOIN source_message AS m ON m.id = bm.message_id"
-        "  LEFT JOIN person AS p ON p.id = m.sender_person_id"
-        " WHERE bm.bucket_id = ?"
-        " ORDER BY m.id",
-        (bucket_id,),
-    ).fetchall()
-
-    internal_id_by_source_id = {
-        str(r["source_message_id"]): int(r["id"]) for r in message_rows
-    }
-
-    for row in message_rows:
-        msg_id = int(row["id"])
-        raw_reply = row["reply_reference"]
-        resolved_reply: int | None = None
-        if raw_reply is not None:
-            resolved_reply = internal_id_by_source_id.get(str(raw_reply))
-
-        raw_content = row["content"]
-        if raw_content is None:
-            content_copy: str | None = None
-        else:
-            masked = mask_pii(str(raw_content))
-
-            def _replace_user(match: re.Match[str], mid: int = msg_id) -> str:
-                nonlocal next_handle
-                uid = match.group(1)
-                h = handle_for_user.get(uid)
-                if h is None:
-                    h = f"@m{next_handle}"
-                    next_handle += 1
-                    handle_for_user[uid] = h
-                    handle_map[h] = uid
-                msg_handles = handles_by_message.setdefault(mid, [])
-                if h not in msg_handles:
-                    msg_handles.append(h)
-                return h
-
-            masked = _USER_MENTION_RE.sub(_replace_user, masked)
-            masked = _ROLE_MENTION_RE.sub("@role", masked)
-            masked = _CHANNEL_MENTION_RE.sub("#channel", masked)
-            masked = _CUSTOM_EMOJI_RE.sub(r":\1:", masked)
-            content_copy = masked
-
-        entries.append(
+    entries, mapping = bucket_message_entries(connection, bucket_id)
+    return (
+        tuple(
             ProposalMessage(
-                message_id=msg_id,
-                sender_name=(
-                    None if row["sender_name"] is None else str(row["sender_name"])
-                ),
-                event_timestamp=(
-                    None
-                    if row["event_timestamp"] is None
-                    else str(row["event_timestamp"])
-                ),
-                reply_reference=resolved_reply,
-                content=content_copy,
-                mention_handles=tuple(handles_by_message.get(msg_id, ())),
+                message_id=entry.message_id,
+                sender_name=entry.sender_name,
+                event_timestamp=entry.event_timestamp,
+                reply_reference=entry.reply_to_message_id,
+                content=entry.masked_content,
+                mention_handles=entry.mention_handles,
             )
-        )
-    return tuple(entries), handle_map
+            for entry in entries
+        ),
+        dict(mapping),
+    )
 
 
 def _proposal_request(

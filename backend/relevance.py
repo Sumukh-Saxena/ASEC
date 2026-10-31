@@ -133,6 +133,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from backend.ai_context import bucket_message_entries
 from backend.bucket_lifecycle import (
     BucketState,
     InvalidBucketTransitionError,
@@ -235,17 +236,19 @@ class ContextMessage:
     """One bucket message as the classifier sees it (EIR-03 request).
 
     ``sender_*`` fields are ``None`` for unknown senders (missing stored
-    as missing, DR-04). ``masked_content`` is the NFR-SEC-04-masked copy;
-    originals never leave the backend (DR-03). Mention handles are opaque
-    Discord IDs, never resolved or remapped here (EIR-03).
+    as missing, DR-04). ``masked_content`` is the NFR-SEC-04-masked copy with
+    Discord markup rewritten to opaque handles; originals never leave the
+    backend (DR-03). ``mention_handles`` are the opaque ``@mN`` handles of the
+    message's mentions (EIR-03); the handle mapping stays on the backend.
+    ``reply_to_message_id`` is the internal id of the replied-to message when
+    it belongs to this bucket, otherwise ``None`` (DC-19).
     """
 
     message_id: int
     sender_person_id: int | None
-    sender_discord_user_id: str | None
     sender_name: str | None
     event_timestamp: str | None
-    reply_reference: str | None
+    reply_to_message_id: int | None
     masked_content: str | None
     mention_handles: tuple[str, ...]
 
@@ -256,11 +259,14 @@ class RelevanceRequest:
 
     ``instructions`` carries :data:`CLASSIFICATION_POLICY` — the doubt policy
     and vocabulary the backend requires; conveying it is contract, enforcing
-    it semantically is evaluation, not validation.
+    it semantically is evaluation, not validation. ``group_handle`` is an
+    opaque group label (``g<id>``): no Discord channel id leaves the backend.
+    The request carries no mention handle map — the adapter sees handles only
+    and the backend keeps the mapping (plan §4.1 rules 4-5).
     """
 
     bucket_id: int
-    group_discord_channel_id: str
+    group_handle: str
     vertical_name: str | None
     instructions: str
     messages: tuple[ContextMessage, ...]
@@ -395,17 +401,16 @@ def _serialize_masked_request(request: RelevanceRequest) -> str:
     """
     payload = {
         "bucket_id": request.bucket_id,
-        "group_discord_channel_id": request.group_discord_channel_id,
+        "group_handle": request.group_handle,
         "vertical_name": request.vertical_name,
         "instructions": request.instructions,
         "messages": [
             {
                 "message_id": message.message_id,
                 "sender_person_id": message.sender_person_id,
-                "sender_discord_user_id": message.sender_discord_user_id,
                 "sender_name": message.sender_name,
                 "event_timestamp": message.event_timestamp,
-                "reply_reference": message.reply_reference,
+                "reply_to_message_id": message.reply_to_message_id,
                 "masked_content": message.masked_content,
                 "mention_handles": list(message.mention_handles),
             }
@@ -425,16 +430,18 @@ def _bucket_request(
 ) -> RelevanceRequest:
     """Compose the whole-bucket request for ``bucket_id`` (FR-REL-01, EIR-03).
 
-    Messages ordered by ascending id; content is masked only in the
-    request copy through :func:`backend.masking.mask_pii` — the stored
-    content is never touched (DR-03, AC-21). An absent bucket fails loud;
-    an unmapped group's vertical name stays ``None`` (DR-04), never a
-    guessed name. ``raw_metadata`` is deliberately not part of the request:
-    it is adapter-supplied envelope data, not the message content the
-    classifier judges (EIR-03 fixes the request contract).
+    Messages ordered by ascending id; content is masked and markup-rewritten
+    only in the request copy by the shared helper (:mod:`backend.ai_context`)
+    — the stored content is never touched (DR-03, AC-21). An absent bucket
+    fails loud; an unmapped group's vertical name stays ``None`` (DR-04),
+    never a guessed name. The group is identified by an opaque handle, never a
+    Discord channel id, and mention handles are opaque (EIR-03).
+    ``raw_metadata`` is deliberately not part of the request: it is
+    adapter-supplied envelope data, not the message content the classifier
+    judges (EIR-03 fixes the request contract).
     """
     context = connection.execute(
-        "SELECT g.discord_channel_id AS channel, v.name AS vertical_name"
+        "SELECT g.id AS group_id, v.name AS vertical_name"
         "  FROM bucket AS b"
         "  JOIN source_group AS g ON g.id = b.group_id"
         "  LEFT JOIN vertical AS v ON v.id = g.vertical_id"
@@ -443,69 +450,26 @@ def _bucket_request(
     ).fetchone()
     if context is None:
         raise UnknownBucketError(f"no bucket with id {bucket_id}")
-    handles: dict[int, list[str]] = {}
-    for row in connection.execute(
-        "SELECT bm2.message_id AS message_id, mm.mentioned_discord_user_id AS handle"
-        "  FROM message_mention AS mm"
-        "  JOIN bucket_message AS bm2 ON bm2.message_id = mm.message_id"
-        " WHERE bm2.bucket_id = ?"
-        " ORDER BY mm.message_id, mm.mentioned_discord_user_id",
-        (bucket_id,),
-    ).fetchall():
-        handles.setdefault(int(row["message_id"]), []).append(
-            str(row["handle"])
-        )
-    entries = tuple(
-        ContextMessage(
-            message_id=int(row["id"]),
-            sender_person_id=(
-                None
-                if row["sender_person_id"] is None
-                else int(row["sender_person_id"])
-            ),
-            sender_discord_user_id=(
-                None
-                if row["sender_discord_user_id"] is None
-                else str(row["sender_discord_user_id"])
-            ),
-            sender_name=(
-                None if row["sender_name"] is None else str(row["sender_name"])
-            ),
-            event_timestamp=(
-                None
-                if row["event_timestamp"] is None
-                else str(row["event_timestamp"])
-            ),
-            reply_reference=(
-                None
-                if row["reply_reference"] is None
-                else str(row["reply_reference"])
-            ),
-            masked_content=(
-                None if row["content"] is None else mask_pii(str(row["content"]))
-            ),
-            mention_handles=tuple(handles.get(int(row["id"]), ())),
-        )
-        for row in connection.execute(
-            "SELECT m.id, m.sender_person_id, m.sender_discord_user_id,"
-            "       p.name AS sender_name, m.event_timestamp,"
-            "       m.reply_reference, m.content"
-            "  FROM bucket_message AS bm"
-            "  JOIN source_message AS m ON m.id = bm.message_id"
-            "  LEFT JOIN person AS p ON p.id = m.sender_person_id"
-            " WHERE bm.bucket_id = ?"
-            " ORDER BY m.id",
-            (bucket_id,),
-        ).fetchall()
-    )
+    entries, _handle_mapping = bucket_message_entries(connection, bucket_id)
     return RelevanceRequest(
         bucket_id=bucket_id,
-        group_discord_channel_id=str(context["channel"]),
+        group_handle=f"g{int(context['group_id'])}",
         vertical_name=(
             None if context["vertical_name"] is None else str(context["vertical_name"])
         ),
         instructions=CLASSIFICATION_POLICY,
-        messages=entries,
+        messages=tuple(
+            ContextMessage(
+                message_id=entry.message_id,
+                sender_person_id=entry.sender_person_id,
+                sender_name=entry.sender_name,
+                event_timestamp=entry.event_timestamp,
+                reply_to_message_id=entry.reply_to_message_id,
+                masked_content=entry.masked_content,
+                mention_handles=entry.mention_handles,
+            )
+            for entry in entries
+        ),
     )
 
 

@@ -37,6 +37,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+import backend.ai_context as ai_context
 import backend.relevance as relevance
 from backend.bucket_lifecycle import (
     BucketState,
@@ -113,6 +114,7 @@ def _message(
     group_id: int,
     index: int,
     *,
+    source_message_id: str | None = None,
     sender_person_id: int | None = None,
     sender_discord_user_id: str | None = None,
     content: str | None = None,
@@ -127,7 +129,9 @@ def _message(
         "  reply_reference, flag_unclassified)"
         " VALUES ('discord', ?, ?, ?, ?, ?, '2026-01-01T10:00:00+00:00', ?, ?, 0)",
         (
-            f"mid-{group_id}-{index}",
+            source_message_id
+            if source_message_id is not None
+            else f"mid-{group_id}-{index}",
             group_id,
             sender_person_id,
             sender_discord_user_id,
@@ -286,16 +290,17 @@ def test_request_carries_whole_bucket_context(
     assert result.outcomes[0].status is RelevanceOutcome.CLASSIFIED
     request = classifier.requests[0]
     assert request.bucket_id == bucket_id
-    assert request.group_discord_channel_id == "chan-nine"
+    assert request.group_handle == "g1"
     assert request.vertical_name == "Tech"
     (entry,) = request.messages
     assert entry.message_id == mid
     assert entry.sender_name == "Arjun"
-    assert entry.sender_discord_user_id == "1001"
+    assert not hasattr(entry, "sender_discord_user_id")
     assert entry.sender_person_id == person_id
     assert entry.event_timestamp == "2026-01-01T10:00:05+00:00"
-    assert entry.reply_reference == "some-reply-ref"
-    assert entry.mention_handles == ("2002",)
+    # DC-19: a reply reference outside the bucket resolves to None.
+    assert entry.reply_to_message_id is None
+    assert entry.mention_handles == ("@m1",)
     assert entry.masked_content == "call me"
 
 
@@ -315,7 +320,7 @@ def test_unmapped_group_carries_vertical_context_as_missing(
     run_relevance_pass(conn, classifier)
     request = classifier.requests[0]
     assert request.vertical_name is None
-    assert request.group_discord_channel_id == "chan-2"
+    assert request.group_handle == "g2"
 
 
 def test_unknown_sender_carries_absent_sender_information(
@@ -333,7 +338,7 @@ def test_unknown_sender_carries_absent_sender_information(
     result = run_relevance_pass(conn, classifier)
     (entry,) = classifier.requests[0].messages
     assert entry.sender_name is None
-    assert entry.sender_discord_user_id is None
+    assert not hasattr(entry, "sender_discord_user_id")
     assert entry.sender_person_id is None
     assert result.outcomes[0].decision_count == 1
 
@@ -399,8 +404,71 @@ def test_mention_handles_stay_opaque(
 
     run_relevance_pass(conn, classifier)
     (entry,) = classifier.requests[0].messages
-    assert entry.mention_handles == ("1234567890123456789",)
+    assert entry.mention_handles == ("@m1",)
     assert "1234567890123456789" not in entry.masked_content
+    assert "1234567890123456789" not in repr(classifier.requests[0])
+
+
+def test_request_carries_handles_group_handle_and_internal_reply(
+    conn: sqlite3.Connection,
+) -> None:
+    """S1/EIR-03: the relevance request is handles-only — opaque mention
+    handles, a group handle and same-bucket reply ids; no raw Discord id
+    reaches the adapter (plan §4.1 rules 2-5, plan §7)."""
+    _vertical(conn, 1, "Tech")
+    _group(conn, 1, vertical_id=1, channel="chan-nine")
+    bucket_id = _bucket(conn, 1)
+    first = _message(
+        conn,
+        1,
+        1,
+        source_message_id="1098765432109876543",
+        content="hey <@2002> and <@!2003>",
+    )
+    second = _message(
+        conn,
+        1,
+        2,
+        source_message_id="1098765432109876544",
+        reply_reference="1098765432109876543",
+        content="acknowledged",
+    )
+    _membership(conn, bucket_id, first, 1)
+    _membership(conn, bucket_id, second, 1)
+    _mention(conn, first, "2002", 0)
+    _mention(conn, first, "2003", 1)
+    classifier = ScriptedClassifier(
+        [_decisions_from_members([(first, "mid-1-1"), (second, "mid-1-2")])]
+    )
+
+    result = run_relevance_pass(conn, classifier)
+
+    assert result.outcomes[0].status is RelevanceOutcome.CLASSIFIED
+    request = classifier.requests[0]
+    assert request.group_handle == "g1"
+    first_entry, second_entry = request.messages
+    assert first_entry.mention_handles == ("@m1", "@m2")
+    assert first_entry.masked_content == "hey @m1 and @m2"
+    assert second_entry.reply_to_message_id == first
+    assert second_entry.mention_handles == ()
+
+    # No real Discord identifier anywhere in the request the model saw.
+    serialized = relevance._serialize_masked_request(request)
+    rep = repr(request)
+    for raw in (
+        "2002",
+        "2003",
+        "chan-nine",
+        "1098765432109876543",
+        "1098765432109876544",
+    ):
+        assert raw not in serialized
+        assert raw not in rep
+    # Backend-side decisions stay keyed by internal message id (rule 5).
+    assert [int(row["message_id"]) for row in _decisions(conn, bucket_id)] == [
+        first,
+        second,
+    ]
 
 
 def test_policy_contract_carried_on_every_request(
@@ -1383,10 +1451,9 @@ def test_context_message_frozen_contract(conn: sqlite3.Connection) -> None:
     entry = ContextMessage(
         message_id=1,
         sender_person_id=None,
-        sender_discord_user_id=None,
         sender_name=None,
         event_timestamp=None,
-        reply_reference=None,
+        reply_to_message_id=None,
         masked_content=None,
         mention_handles=(),
     )
@@ -1881,7 +1948,10 @@ def test_snapshot_is_stable_when_masking_rules_change_later(
     artifact_a_before = _snapshot_rows(conn, attempt_a)[0]["masked_request"]
     hash_a_before = _snapshot_rows(conn, attempt_a)[0]["request_sha256"]
 
-    # A future ruleset edit: NEW attempts would mask differently…
+    # A future ruleset edit: NEW attempts would mask differently…  The
+    # request-copy masking moved to the shared Phase 7 helper (S1), so the
+    # patch targets that module; relevance's own error redaction keeps its own.
+    monkeypatch.setattr(ai_context, "mask_pii", lambda text: "MASKED-DIFFERENTLY")
     monkeypatch.setattr(relevance, "mask_pii", lambda text: "MASKED-DIFFERENTLY")
     mid_c = _message(conn, 1, 9)
     bucket_c = _bucket(conn, 1)
