@@ -53,6 +53,7 @@ Real facts verified in the repository today:
 | S6 | Discord source adapter (protocol + stdlib transport) | FR-ING-01/02/07, EIR-01, NFR-MNT-02 |
 | S7 | Oversize bucket parts, never truncation | FR-BKT-11 |
 | S8 | Config surface, tests, mutations, DoD | NFR-MNT-01/02, NFR-MNT-04 |
+| S9 | Operational foundations: settings module, structured JSON logging + redaction + rotation, startup self-check, health function, alert function with a log sender | NFR-SEC-01, NFR-REL-06, NFR-MNT-01 |
 
 ### 2.2 Non-goals
 
@@ -62,6 +63,10 @@ Real facts verified in the repository today:
 - No new database engine; SQLite stays (PB-4).
 - No live Discord call in the test suite; no token in any file.
 - No new dependency unless the owner approves it (S6 decision O9-1).
+- No push or Discord alert delivery in Phase 9: alerts go through `AlertSender`, and only
+  `LogAlertSender` ships here; Phase 11 adds the push/Discord sender.
+- No new migration for operations: logging, health and alerts are read-only code paths.
+- No secrets in the settings object, log records, health output or alert text.
 
 ### 2.3 Boundary rule
 
@@ -85,10 +90,15 @@ classifier/generator objects and does nothing AI-specific itself.
 | `run_relevance_pass`, `run_proposal_pass` | `backend/relevance.py`, `backend/proposals.py` | invoked by the tick with injected models |
 | `latency_measurement` | `0011` | written by the tick at stage boundaries |
 | `Config.require/get` | `backend/config.py` | all new configuration; secrets redacted |
+| `pipeline_backlog`, `PipelineBacklog`, `GroupBacklog` | `backend/orchestration.py` | health snapshot reuses count and event-time age; no duplicate backlog query |
+| `bucket.processing_state`, `source_message.flag_unknown_sender`, `flag_unmapped` | `0002`, `0003` | health counts unprocessed buckets, unknown senders and unmapped messages |
+| `notification`, `notification_attempt` | `0008` | delivery-failure alert counts failed attempts (zero until Phase 11 writes rows) |
+| `apply_migrations`, `MIGRATIONS_DIR` | `backend/db/migrations.py` | startup check asserts the database is at head |
 
 New modules: `backend/clock.py` (or `scheduler.py`), `backend/worker.py`,
-`backend/replay.py`, `backend/discord_adapter.py`. Imports stay downward; no module
-imports `worker.py`.
+`backend/replay.py`, `backend/discord_adapter.py`, `backend/settings.py`,
+`backend/observability.py`, `backend/startup.py`, `backend/health.py`,
+`backend/alerts.py`. Imports stay downward; no module imports `worker.py`.
 
 ---
 
@@ -276,7 +286,174 @@ def import_export(connection, path, *, time_zone: str, source: str,
 | R-8 | Same file, mapping changed between imports | derived IDs unchanged (derivation is pre-mapping) |
 
 
-### 4.6 Discord adapter (FR-ING-01, EIR-01)
+### 4.6 Operational foundations (NFR-SEC-01, NFR-REL-06)
+
+The pipeline must run unattended for days and must not fail silently. This section adds no
+schema and no dependency; it uses the standard library (`logging`, `logging.handlers`,
+`json`, `datetime`, `zoneinfo`). It is workstream W5, **before** the Discord adapter.
+
+#### 4.6.1 One settings module (`backend/settings.py`)
+
+```python
+@dataclass(frozen=True)
+class Settings:
+    database_path: Path
+    time_zone: str                    # default "Asia/Kolkata"
+    discord_base_url: str
+    model_endpoint: str | None
+    log_path: Path
+    log_max_bytes: int = 10_000_000
+    log_backup_count: int = 5
+    clock_skew_limit_seconds: int = 120
+    oldest_bucket_alert_seconds: int = 300
+    unknown_sender_alert_count: int = 5
+    unmapped_alert_count: int = 5
+    silent_group_alert_minutes: int = 15
+    delivery_failure_alert_count: int = 3
+    health_window_minutes: int = 60
+    event_hours_start: str = "08:00"
+    event_hours_end: str = "23:00"
+    alert_recipient: str | None = None   # owner input O9-7
+
+def load_settings(environ: Mapping[str, str] | None = None) -> Settings
+```
+
+- Non-secret values come from `Config.get`/environment with the defaults above; `Settings`
+  validates them at load (`SettingsError` on a bad path, time zone, clock or duration).
+- **Only secrets come from environment variables**: `DISCORD_BOT_TOKEN` and any model key
+  are read with `Config.require` at the point of use and never stored on `Settings`; its
+  `repr`/`asdict` redacts them. No secret is written to a file, log or alert.
+- `database_path` is the one place the SQLite file is named; the CLI, worker, replay,
+  health and startup all take it from `Settings` (no scattered defaults).
+- `event_hours_start/end` are local times in `time_zone`; they gate only the silent-group
+  alert, not ingestion.
+- All thresholds are configuration, not SRS values; O9-7 (alert recipient) and O9-8 (event
+  hours) are the owner inputs.
+
+#### 4.6.2 Structured JSON logging with redaction (`backend/observability.py`)
+
+```python
+def configure_logging(settings: Settings) -> None
+def get_logger(name: str) -> logging.Logger
+class RedactionFilter(logging.Filter): ...
+```
+
+- One JSON object per line: `ts` (UTC ISO-8601), `level`, `logger`, `event` (stable
+  token), `message`, plus allowlisted context (`group_id`, `bucket_id`, `message_id`,
+  `stage`, `outcome`, `count`, `duration_ms`, `request_id`). Message content is never a
+  log field.
+- A `RedactionFilter` runs before formatting on `msg`, args and `extra`:
+  - phone numbers (E.164 and 10-digit Indian forms) → `[REDACTED:PHONE]`;
+  - institute roll numbers (the login credential) → `[REDACTED:ROLL]`;
+  - tokens and credentials (`Bot …`, `Bearer …`, long hex/base64, key=value for
+    `TOKEN/SECRET/PASSWORD/KEY/OTP`) → `[REDACTED:SECRET]`;
+  - Discord IDs (17–20 digit snowflakes) → `[REDACTED:DISCORD_ID]`.
+  Credentials are never logged at all; the filter is defence in depth, not permission to
+  log them.
+- `RotatingFileHandler` at `settings.log_path` with `maxBytes`/`backupCount`; the directory
+  is created if missing; a stderr handler is kept for foreground runs. Log files live
+  outside the repository (default `var/log/asec.log`, git-ignored).
+- Exceptions are logged as a sanitized `error` string plus `error_type`; no exception args
+  that can carry message content or a token.
+
+#### 4.6.3 Startup self-check (`backend/startup.py`)
+
+```python
+class ClockProbe(Protocol):
+    def latest_message_timestamp(self) -> str: ...
+
+def run_startup_checks(connection, settings: Settings, *, now: str,
+                       clock_probe: ClockProbe | None = None) -> StartupReport
+```
+
+Checks, each recorded as `ok`/`failed`/`skipped` with a reason:
+
+1. **Database**: the path exists (or its directory is writable for a new file), the file is
+   readable/writable, and `PRAGMA journal_mode` is `wal`.
+2. **Migrations current**: `apply_migrations(connection)` returns `[]`; a pending migration
+   is a refusal (the worker never starts mid-upgrade).
+3. **Configuration complete**: required non-secret settings present and valid, log directory
+   writable, time zone resolvable, and the secrets the enabled adapters need present via
+   `Config.require`.
+4. **Host clock**: in `LIVE` mode, compare `now` with the newest Discord message timestamp
+   returned by `clock_probe`; if `abs(skew) > clock_skew_limit_seconds` the startup is
+   refused. If the probe is unavailable, `LIVE` refuses (no clock evidence) while `REPLAY`
+   records `clock_check='SKIPPED'` and continues. The probe is injected; tests use a fake.
+
+`StartupReport(ok, checks, refusals)`; `run_worker` and the CLI call it before the loop and
+exit non-zero on refusal, logging the refusal event without secrets. A refusal is never a
+silent fallback.
+
+#### 4.6.4 Health function (`backend/health.py`)
+
+```python
+@dataclass(frozen=True)
+class HealthSnapshot:
+    at: str
+    migrations_current: bool
+    oldest_unprocessed_bucket_id: int | None
+    oldest_unprocessed_age_seconds: int | None   # wall-clock, from newest member received_at
+    unknown_sender_count: int
+    unmapped_count: int
+    last_message_at_by_group: tuple[tuple[int, str | None], ...]
+    failed_delivery_count: int
+
+def health_snapshot(connection, settings: Settings, *, now: str) -> HealthSnapshot
+```
+
+- Read-only. Reuses `pipeline_backlog` for the count and event-time age, and adds a
+  wall-clock age for the oldest bucket whose `processing_state != 'PROCESSED'` using the
+  newest member's `received_at` (so a stalled worker is visible even when event time is
+  ahead of progress).
+- Unknown senders = `source_message.flag_unknown_sender = 1`; unmapped =
+  `source_message.flag_unmapped = 1`; both within `health_window_minutes` by `received_at`.
+- `last_message_at_by_group` is the newest `received_at` per `source_group`.
+- Delivery failures = failed `notification_attempt` rows in the window (zero before Phase
+  11 writes any; the table exists from 0008).
+- No content, sender label, phone or Discord ID is returned; counts and timestamps only.
+
+#### 4.6.5 Alerts (`backend/alerts.py`)
+
+```python
+class AlertSender(Protocol):
+    def send(self, alert: Alert) -> None
+
+class LogAlertSender:  # Phase 9: the only sender
+    ...
+
+@dataclass(frozen=True)
+class Alert:
+    rule: str          # OLDEST_BUCKET | UNKNOWN_SENDER | UNMAPPED | SILENT_GROUP | DELIVERY_FAILURE
+    severity: str      # WARNING | CRITICAL
+    observed: float | int
+    threshold: float | int
+    message: str
+    at: str
+
+def evaluate_alerts(snapshot: HealthSnapshot, settings: Settings) -> tuple[Alert, ...]
+def run_alert_pass(connection, settings: Settings, *, now: str,
+                   sender: AlertSender) -> tuple[Alert, ...]
+```
+
+Rules (thresholds from `Settings`; all are owner-tunable, not SRS values):
+
+| Rule | Fires when |
+|---|---|
+| `OLDEST_BUCKET` | oldest unprocessed bucket age ≥ `oldest_bucket_alert_seconds` |
+| `UNKNOWN_SENDER` | unknown-sender count in the window ≥ `unknown_sender_alert_count` |
+| `UNMAPPED` | unmapped-message count in the window ≥ `unmapped_alert_count` |
+| `SILENT_GROUP` | a mapped group has no message for ≥ `silent_group_alert_minutes` **and** `now` is inside `event_hours_start`–`event_hours_end` in `time_zone` |
+| `DELIVERY_FAILURE` | failed delivery attempts in the window ≥ `delivery_failure_alert_count` |
+
+- `evaluate_alerts` is pure and deterministic for a snapshot; `run_alert_pass` logs and
+  sends. A per-process `(rule, subject)` memo suppresses repeats of the same alert until the
+  condition clears; no table and no migration are added.
+- `LogAlertSender` writes a structured `alert` event (rule, severity, observed, threshold)
+  through the redacting logger; `alert_recipient` (O9-7) is recorded for Phase 11's sender.
+- **Phase 11** implements `PushAlertSender`/`DiscordAlertSender` behind the same protocol;
+  Phase 9 tests assert the interface and the log sender only.
+
+### 4.7 Discord adapter (FR-ING-01, EIR-01)
 
 ```python
 class DiscordSource(Protocol):
@@ -305,7 +482,7 @@ class DiscordRestSource:
 - Tests use a fake transport/fixture server. A real-server smoke test is a manual,
   owner-run step with a token supplied through the environment, never in the repo.
 
-### 4.7 Oversize buckets in parts (FR-BKT-11)
+### 4.8 Oversize buckets in parts (FR-BKT-11)
 
 - `RELEVANCE_MAX_MESSAGES_PER_CALL` and `PROPOSAL_MAX_CANDIDATES_PER_CALL` are
   configuration (validated positive, owner-approved defaults proposed at 40 and 20).
@@ -325,7 +502,7 @@ class DiscordRestSource:
   model window remains a Phase 10 adapter concern (it may fail the attempt, never drop
   content).
 
-### 4.8 Errors and security
+### 4.9 Errors and security
 
 - `ClockModeError` (mode change/unknown mode), `ReplayError` (schema/timezone/batch),
   `DiscordAdapterError` (HTTP/transport after retries). Existing bucketing errors keep

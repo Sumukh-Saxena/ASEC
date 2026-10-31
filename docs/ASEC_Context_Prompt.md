@@ -1,7 +1,6 @@
 # ASEC — Context Prompt
 
-Paste this at the start of any new AI chat. It replaces uploading the SRS, the repo and the build logs.
-Source of truth: `ASEC-SRS-001` v2.0 (13 Oct 2026) plus the owner's decisions and the review notes at the end (state as of 23 Oct 2026).
+Source of truth: `ASEC-SRS-001` v2.0 (13 Oct 2026) plus the owner's decisions and the review notes at the end (state as of 29 Oct 2026).
 
 ---
 
@@ -207,38 +206,31 @@ Discord is the only MVP source and probably the only staging ground · volunteer
 
 ---
 
-## 11. Build status (as of 23 Oct 2026)
+## 11. Build status (as of 29 Oct 2026)
 
-Repo "ASEC Build Lab": Python 3.12, **no runtime dependencies**, SQLite (WAL, foreign keys on), versioned SQL migrations **0001–0014** with checksums, pytest/ruff/mypy, GitHub CI. Coding agents (earlier OpenCode, now Antigravity) work under `AGENTS.md` and the rules in the prompts: read the SRS first; plan before implementing; tests first with RED evidence; no commits, pushes or staging without the owner's say-so; never read `.env` or session logs. Phase plans live in `docs/PHASE2_PLAN.md` and `docs/PHASE5_PLAN.md`.
+Repo "ASEC Build Lab": Python 3.12, **no runtime dependencies**, SQLite (WAL, foreign keys on), versioned SQL migrations **0001-0015** with checksums, pytest/ruff/mypy, GitHub CI. **1016 tests pass**, ruff and mypy clean. Coding agents work under `AGENTS.md` and `docs/RULES.md`: read the SRS first; tests first with RED evidence; mutation checks on critical rules; no commits, pushes or staging by agents; never read `.env` or session logs. The owner commits at each green checkpoint.
 
-**Phases:** 0 foundation and masking · 1 DB connection and migration runner · 2 data layer (migrations 0001–0012) and normalized ingestion with replay · 3 bucket formation, lifecycle and orchestration (`bucketing.py`, `bucket_lifecycle.py`, `orchestration.py`) · 4 relevance classification with durable masked-input snapshots and terminal-failure convergence (`relevance.py`, migration 0013; committed as HEAD `39d694d`) · **5 proposal generation and validation** (`proposals.py`, migration 0014): implemented and stabilized, **uncommitted pending owner authorization**; 862 tests pass, ruff and mypy clean.
+**Done and committed (Phases 0-6):** foundation and masking; database and migration runner; data layer and normalized ingestion with replay; bucket formation, lifecycle and orchestration; relevance service; proposal generation and validation (opaque mention handles, markup rewriting, backend assignee resolution, raw response retention); proposal review service (edits as immutable revisions, gated accept creating exactly one task or announcement, hidden pending cross-vertical tasks with approval request and recipients, authorization denial recording, notification rows staged, Admin-only evaluation export).
 
-**Built behaviour:** ingestion (idempotent, unknown channels registered as unmapped) · bucketing with the SRS production parameters W=15, G=5, M=30, C=2 · relevance service (stateless classifier protocol, whole-bucket context, two-valued decisions, failures never recorded as IRRELEVANT, retry budgets, fallback, first-writer-wins, manual re-queue) · proposal service (eligible AH/Head senders, per-request opaque mention handles, three-tier structural validation, backend-side assignee resolution, raw response and masked request retained, no task/announcement/notification writes, backlog and stage-delay measurement) · masking of phone numbers, emails, government-ID-like numbers (Aadhaar, PAN) and roll numbers.
-**Not built:** scheduler/clock that closes buckets (nothing calls `mark_stream_progress` outside tests), Discord adapter, review service (Phase 6), task lifecycle (7), cross-vertical approvals (8), notification delivery (9), API, OTP/auth, mobile app, evaluation corpus, benchmark, live model integration.
+**Planned, not built (Phases 7-12, docs in `docs/PHASE7_PLAN.md` ... `PHASE12_PLAN.md`, roadmap in `docs/ROADMAP.md`, execute prompts in `docs/prompts/`):**
+- 7: relevance retrofit (opaque handles), eligibility default ON, one schema window (task table rebuild, roster integrity, structured announcement audience), task lifecycle (claims, agreement, work status, cancellation, edits, history, roll-ups) with one filter that hides pending tasks.
+- 8: cross-vertical approval decisions. 9: per-group clock and scheduler (arrival-order fix), timestamp fallback, replay importer with sender mapping, operational foundations (logging, startup checks, health, alerts), Discord adapter (REST polling), oversized bucket parts.
+- 10: model adapter over HTTP, evaluation harness against SRS section 7 targets, model comparison. 11: notification delivery (FCM HTTP v1 via optional extra, OTP sender interface), announcement fan-out. 12: roster loader, OTP sign-in, API (framework in an optional extra), authorization matrix tests, dashboards backend.
+- A deployment and operations phase (13) is recommended in `docs/ASEC_Deployment_Readiness.md` and not yet planned.
 
-**Roadmap:** Phase 6 review service (FR-REV) · 7 tasks (FR-TSK) · 8 cross-vertical (FR-XV) · 9 notifications and announcements (FR-NOT) · 10 API, dashboards, real-data evaluation.
+**Owner decisions** are recorded in `docs/DECISIONS.md` (Phase 6 and PB items) and `docs/OWNER_ANSWERS.md` (Phases 7-12). Items marked OWNER SUPPLIES need the owner: Discord token (environment only) and test server, labelled evaluation set (at least 300 masked messages), SMS provider for sign-in codes, app deep-link scheme and hosting or TLS arrangement.
 
 ---
 
-## 12. Known problems and open decisions (review of 23 Oct 2026)
+## 12. Known problems and open items (29 Oct 2026)
 
-**Already fixed since the first review:** production bucket defaults corrected to the SRS values; the repo's SRS copy replaced by the faithful text; masking extended to Aadhaar/PAN and more phone formats; migration 0012 added rejection, assignee-resolution and mention tables; line endings normalized.
-
-**Still open for the owner (called PB-1 … PB-7; not to be confused with the older "D-1/D1/D2/D3" routine decisions in `PHASE2_PLAN.md`):**
-- **PB-1 Bucket clock, settling, late semantics.** With W=15, G=5, M=30, C=2 and progress advanced to the maximum event time after each arrival, order 0,12,16 gives one bucket but 0,16,12 gives three, breaking FR-BKT-06. Nothing drives bucket closure from a clock, so a live run never closes a bucket. Recommended design: per-group clock; a message is settled when `clock ≥ t + C`; assign only settled messages sorted by (event time, source message ID); close when `clock ≥ e + C`; late only if the bucket it would have joined is already closed.
-- **PB-2 Missing, malformed or naive event timestamps** are skipped and never bucketed or classified; replay of timezone-less exports skips everything. Recommended: bucket time falls back to receipt time with a stored marker; the importer takes an explicit time zone.
-- **PB-3 Task table:** EXPLICIT tasks forced to `people_needed = 1`; `UNIQUE(task_id, person_id)` blocks re-adding a person after a denial; assignee cancellation representation; NULL responsible vertical on INTERNAL tasks.
-- **PB-4 SQLite (built) vs PostgreSQL (SRS figures 1 and 3).**
-- **PB-5 Roster integrity:** free-text role, `reports_to` not a foreign key, one role per person although a person may belong to several verticals, nullable phone and roll number.
-- **PB-6 Announcement audience** is free text. **PB-7 Bucket predecessor links:** every bucket is chained (including a fallback link); the SRS asks only for a link when a late message goes into a new bucket.
-- **Relevance retrofit:** relevance (`relevance.py`, migration 0013) still sends real Discord user IDs; only the proposal stage uses opaque handles, as EIR-03 requires. Retrofit needs owner approval.
-- **Eligibility across verticals:** whether an AH/Head posting in another vertical's group is eligible; currently a config flag, default off.
-- **Review service edges (Figure 6):** pending → edited (loops) → accepted or rejected; accepted and rejected are terminal; accept blocked while an assignee is unresolved or flagged.
-- **Bucket PROCESSED before proposals:** buckets become PROCESSED after relevance, so proposal-stage state is visible only through the proposal backlog functions.
-- **README** still describes an external "Piggyback" bot sending role and vertical; the SRS puts the Discord adapter inside the backend and the backend resolves identity from the roster (FR-ING-10, BR-01). Treat the README text as stale.
-- **Security housekeeping:** a Discord bot token exists in `.env` and in git history; reset it.
-
-**SRS wording to fix (owner edits the SRS):** "section 12" reference that does not exist · roll number "fallback" (§4.1) vs primary credential (FR-ROS-03) · assignee-record "cancelled" value that does not exist · cancel rights (FR-TSK-08 creator only vs FR-TSK-16/matrix) · Admin status rights (FR-TSK-05/06 vs matrix) · P95 ≤ 30 s is unattainable when the bucket wait alone is 17–32 s · invalid-proposal handling (FR-PRP-05 vs EIR-03) · task type and responsible vertical can contradict · name resolution only against the source vertical · eligible sender vs the group's vertical and role-per-vertical · Heads-and-AHs-only groups vs one-vertical-per-group · clock for "closed when e + C has passed" · sender role missing from the AI input although the eval set needs it · availability ≥ 99% vs Colab best effort · candidate models too large for one Colab-class GPU · retention "archived" vs "transfer for training" · bucket state for a two-stage pipeline.
+- **Not live:** no Discord adapter, no clock that closes buckets (nothing calls `mark_stream_progress` outside tests), no real model call, no logging, no backups, no process supervision.
+- **Arrival-order defect (PB-1):** with W=15, G=5, M=30, C=2, arrival order 0,12,16 gives one bucket but 0,16,12 gives three (FR-BKT-06). Fixed in Phase 9 by the clock-driven settle-then-assign design.
+- **Relevance stage** still sends real Discord IDs; the Phase 7 retrofit fixes it. Do not send real festival chat to any model before that.
+- **Schema defects:** explicit tasks forced to `people_needed = 1`; a unique rule blocks re-adding a person after a denial; free-text roles and `reports_to`; announcement audience tokens are provisional (all in the Phase 7 schema window).
+- **Security housekeeping:** a Discord bot token exists in `.env` and an older one in git history; reset it and keep the repository private.
+- **Privacy:** consent and notice for volunteers, retention (archive only, no training without consent), and Discord's developer policy must be checked before go-live.
+- **SRS wording to fix (owner edits the SRS):** nonexistent "section 12" reference; roll number "fallback" vs primary credential; assignee-record "cancelled" value; who may cancel (FR-TSK-08 vs FR-TSK-16); Admin status rights; the 30 s target (bucket wait alone is 17-32 s); invalid-proposal handling (FR-PRP-05 vs EIR-03); task type vs responsible vertical; names matched only in the source vertical; the clock for "closed when e + C has passed"; sender role missing from the AI input; availability vs Colab best effort; candidate models too large for one Colab-class GPU; "archived" vs "transfer for training"; FR-TSK-01 creator wording; announcement audience; OTP over SMS missing from the external interfaces.
 
 ---
 
