@@ -100,10 +100,20 @@ def _person(
     role: str = "AH",
     active: int = 1,
 ) -> int:
+    # PB-5: canonical role in SRS vocabulary and mandatory unique synthetic columns
+    canonical_role = "Volunteer" if role.upper() == "VOLUNTEER" else role
     conn.execute(
-        "INSERT INTO person (id, name, discord_user_id, role, active)"
-        " VALUES (?, ?, ?, ?, ?)",
-        (person_id, name, discord_id, role, active),
+        "INSERT INTO person (id, name, discord_user_id, phone, role, active, roll_number)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            person_id,
+            name,
+            discord_id,
+            f"+919800001{person_id:03d}",
+            canonical_role,
+            active,
+            f"PROP-{person_id:03d}",
+        ),
     )
     return person_id
 
@@ -1082,15 +1092,14 @@ def test_request_serialization_is_canonical(conn: sqlite3.Connection) -> None:
     [
         ("AH", True),
         ("Head", True),
-        ("ah", True),
-        ("HEAD", True),
         ("Volunteer", False),
-        ("SOS", False),
+        ("Admin", False),
     ],
 )
 def test_role_eligibility_vocabulary(
     conn: sqlite3.Connection, role: str, eligible: bool
 ) -> None:
+    # PB-5 / FR-PRP-02: canonical roles from SRS vocabulary ('Admin', 'Head', 'AH', 'Volunteer')
     _vertical(conn, 1, "Tech")
     _group(conn, 1, vertical_id=1)
     _person(conn, 5, "Arjun", "5001", role=role)

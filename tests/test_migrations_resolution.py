@@ -102,9 +102,21 @@ def _add_person(
     role: str = "AH",
     discord_user_id: str | None = None,
 ) -> int:
+    # PB-5: mandatory unique synthetic phone/roll_number derived from the next id.
+    next_id = int(
+        connection.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM person").fetchone()[0]
+    )
     cursor = connection.execute(
-        "INSERT INTO person (name, role, discord_user_id) VALUES (?, ?, ?)",
-        (name, role, discord_user_id),
+        "INSERT INTO person (id, name, phone, role, discord_user_id, roll_number)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            next_id,
+            name,
+            f"+919800007{next_id:03d}",
+            role,
+            discord_user_id,
+            f"RES-{next_id:03d}",
+        ),
     )
     return int(cursor.lastrowid or 0)
 
@@ -181,9 +193,9 @@ def test_reapplying_the_migrations_is_idempotent(tmp_path: Path) -> None:
         rows = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        # Phase 6 adds migration 0015_review_revisions (revision_assignee);
-        # the shared count expectation bumps 14 -> 15 with it.
-        assert [row["version"] for row in rows] == list(range(1, 16))
+        # Phase 7 adds the 0016-0018 schema window; the shared count
+        # expectation bumps 15 -> 18 with it (PB-3/PB-5/PB-6).
+        assert [row["version"] for row in rows] == list(range(1, 19))
     finally:
         connection.close()
 

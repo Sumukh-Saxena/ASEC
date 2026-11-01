@@ -918,13 +918,13 @@ def _validate_acceptance_gates(
 
 
 def _people_needed_for_task(draft: EffectiveDraft) -> tuple[int | None, int]:
-    """A11: the single place holding migration 0006's EXPLICIT encoding.
+    """A11: the single place holding the task PEOPLE-NEEDED encoding.
 
-    PB-3 (owner plan-only rebuild) changes EXPLICIT tasks to ``people_needed
-    NULL``; only this helper needs to change then.
+    PB-3 (0017) stores ``people_needed NULL`` for EXPLICIT tasks and keeps the
+    positive-count / unlimited encoding for OPEN tasks.
     """
     if draft.assignment_mode == "EXPLICIT":
-        return 1, 0
+        return None, 0
     if draft.people_needed_unlimited == 1:
         return None, 1
     return draft.people_needed, 0
@@ -1529,7 +1529,11 @@ def _materialize_task(
         if reviewer_person_id is not None
         else actor_person_id
     )
-    responsible_vertical_id = draft.responsible_vertical_id
+    responsible_vertical_id = (
+        source_vertical_id
+        if draft.task_type == "INTERNAL"
+        else draft.responsible_vertical_id
+    )
     cross_vertical = (
         draft.task_type == "CROSS_VERTICAL"
         and responsible_vertical_id is not None
@@ -1708,16 +1712,23 @@ def _materialize_announcement(
     actor_person_id: int,
     now: str,
 ) -> int:
-    scope = "VERTICAL" if sender_role == "Head" else "AH_VOLUNTEERS"
+    audience_type = "VERTICAL" if sender_role == "Head" else "AH_VOLUNTEERS"
+    ah_person_id = (
+        int(proposal["reviewer_person_id"])
+        if audience_type == "AH_VOLUNTEERS" and proposal["reviewer_person_id"] is not None
+        else None
+    )
     cursor = connection.execute(
         "INSERT INTO announcement (proposal_id, accepted_by, accepted_at,"
-        " audience_vertical_id, audience_scope) VALUES (?, ?, ?, ?, ?)",
+        " audience_type, audience_vertical_id, audience_ah_person_id)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
         (
             int(proposal["id"]),
             actor_person_id,
             now,
+            audience_type,
             int(proposal["source_vertical_id"]),
-            scope,
+            ah_person_id,
         ),
     )
     return int(cursor.lastrowid or 0)

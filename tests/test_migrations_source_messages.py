@@ -74,8 +74,11 @@ def _add_group(
 
 
 def _add_person(connection: sqlite3.Connection, person_id: int, name: str = "Asha") -> int:
+    # PB-5: mandatory unique synthetic phone/roll_number for the roster row.
     connection.execute(
-        "INSERT INTO person (id, name, role) VALUES (?, ?, 'AH')", (person_id, name)
+        "INSERT INTO person (id, name, phone, role, roll_number)"
+        " VALUES (?, ?, ?, 'AH', ?)",
+        (person_id, name, f"+919800009{person_id:03d}", f"SRC-{person_id:03d}"),
     )
     return person_id
 

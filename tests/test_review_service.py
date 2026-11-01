@@ -102,8 +102,9 @@ def _person(
     active: int = 1,
 ) -> None:
     conn.execute(
-        "INSERT INTO person (id, name, role, active) VALUES (?, ?, ?, ?)",
-        (person_id, name, role, active),
+        "INSERT INTO person (id, name, phone, role, active, roll_number)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (person_id, name, f"+919800000{person_id:03d}", role, active, f"ROLL-{person_id:03d}"),
     )
     conn.execute(
         "INSERT INTO person_vertical (person_id, vertical_id) VALUES (?, ?)",
@@ -524,10 +525,15 @@ def test_admin_override_allowed(conn: sqlite3.Connection) -> None:
 
 
 def test_admin_token_is_trimmed_and_case_insensitive(conn: sqlite3.Connection) -> None:
-    """Plan §4.2: Admin recognition uses the same token convention as Phase 5."""
-    conn.execute("UPDATE person SET role = 'aDmIn' WHERE id = ?", (ADMIN,))
+    """PB-5/O7-6: Admin recognition matches policy case-insensitively with canonical role."""
     proposal_id = _make_proposal(conn)
-    assert get_proposal_review(conn, proposal_id, actor_person_id=ADMIN).proposal_id == proposal_id
+    policy = ReviewPolicy(admin_role_tokens=("aDmIn",))
+    assert (
+        get_proposal_review(
+            conn, proposal_id, actor_person_id=ADMIN, policy=policy
+        ).proposal_id
+        == proposal_id
+    )
 
     policy = load_review_policy(_Config({"ADMIN_ROLES": " Auditor , Lead "}))
     assert policy.admin_role_tokens == ("Auditor", "Lead")
@@ -936,11 +942,13 @@ def test_accept_task_materializes_entity_and_children(conn: sqlite3.Connection) 
     assert int(task["proposal_id"]) == proposal_id
     assert str(task["task_type"]) == "INTERNAL"
     assert int(task["source_vertical_id"]) == 1
-    assert task["responsible_vertical_id"] is None
+    # PB-3/FR-TSK-09: INTERNAL task stores responsible_vertical_id = source_vertical_id NOT NULL
+    assert int(task["responsible_vertical_id"]) == 1
     assert int(task["creator_id"]) == AH
     assert str(task["description"]) == "Arrange the generator"
     assert str(task["assignment_mode"]) == "EXPLICIT"
-    assert int(task["people_needed"]) == 1
+    # PB-3/FR-TSK-04: EXPLICIT tasks carry people_needed NULL
+    assert task["people_needed"] is None
     assert int(task["people_needed_unlimited"]) == 0
     assert str(task["approval_state"]) == "NOT_REQUIRED"
     assert str(task["cancellation"]) == "ACTIVE"
@@ -1275,7 +1283,9 @@ def test_accept_announcement_head_scope(conn: sqlite3.Connection) -> None:
     assert int(announcement["proposal_id"]) == proposal_id
     assert int(announcement["accepted_by"]) == HEAD
     assert int(announcement["audience_vertical_id"]) == 1
-    assert str(announcement["audience_scope"]) == "VERTICAL"
+    # PB-6/FR-REV-10: audience_scope replaced by audience_type and audience_ah_person_id
+    assert str(announcement["audience_type"]) == "VERTICAL"
+    assert announcement["audience_ah_person_id"] is None
     assert _count(conn, "task") == 0
     assert _count(conn, "task_assignee") == 0
 
@@ -1290,7 +1300,9 @@ def test_accept_announcement_ah_scope_creates_no_task_or_notification(
     result = _accept(conn, proposal_id, actor=AH)
 
     announcement = conn.execute("SELECT * FROM announcement").fetchone()
-    assert str(announcement["audience_scope"]) == "AH_VOLUNTEERS"
+    # PB-6/FR-REV-10: audience_scope replaced by audience_type and audience_ah_person_id snapshot
+    assert str(announcement["audience_type"]) == "AH_VOLUNTEERS"
+    assert int(announcement["audience_ah_person_id"]) == AH
     assert int(announcement["audience_vertical_id"]) == 1
     assert result.notification_count == 0
     assert _count(conn, "notification") == 0
@@ -1305,7 +1317,9 @@ def test_announcement_scope_follows_sender_not_admin(conn: sqlite3.Connection) -
     _accept(conn, proposal_id, actor=ADMIN)
     announcement = conn.execute("SELECT * FROM announcement").fetchone()
     assert int(announcement["accepted_by"]) == ADMIN
-    assert str(announcement["audience_scope"]) == "AH_VOLUNTEERS"
+    # PB-6/OD-REV-5: Admin accepting AH announcement keeps AH_VOLUNTEERS and sender AH snapshot
+    assert str(announcement["audience_type"]) == "AH_VOLUNTEERS"
+    assert int(announcement["audience_ah_person_id"]) == AH
 
 
 @pytest.mark.parametrize(
@@ -1420,13 +1434,13 @@ def test_unsupported_sender_role_is_fail_closed(
 
 @pytest.mark.parametrize(
     ("person_id", "role"),
-    [(AH, "aH"), (HEAD, "HEAD")],
+    [(AH, "AH"), (HEAD, "Head")],
 )
-def test_sender_role_matching_is_trimmed_and_case_insensitive(
+def test_sender_role_matching_uses_the_canonical_role(
     conn: sqlite3.Connection, person_id: int, role: str
 ) -> None:
-    """A13: exact tokens, trimmed and case-insensitive, are accepted."""
-    conn.execute("UPDATE person SET role = ? WHERE id = ?", (role, person_id))
+    """PB-5/O7-6: the strict CHECK stores canonical roles; the roster loader,
+    not this layer, normalizes case before the row is written."""
     proposal_id = _make_proposal(conn, sender_person_id=person_id)
     result = _accept(conn, proposal_id, actor=person_id)
     assert result.created is True
@@ -1901,16 +1915,15 @@ def test_eval_export_unknown_actor_is_denied_with_null_actor(
 
 
 def test_eval_export_admin_token_is_configurable(conn: sqlite3.Connection) -> None:
-    """FR-AUT-04/Misc: the Admin token comes from configuration, matching
-    proposal-review authorization."""
-    _person(conn, 18, "Lead", "Coordinator", 1)
+    """PB-5/FR-AUT-04: Admin token comes from configuration with canonical person role."""
+    _person(conn, 18, "Lead", "Head", 1)
     proposal_id = _make_proposal(conn)
     reject_proposal(conn, proposal_id, actor_person_id=AH)
 
     (entry,) = list_reviewed_proposals_for_eval(
         conn,
         actor_person_id=18,
-        policy=ReviewPolicy(admin_role_tokens=("Coordinator",)),
+        policy=ReviewPolicy(admin_role_tokens=("Head",)),
     )
 
     assert entry.proposal_id == proposal_id

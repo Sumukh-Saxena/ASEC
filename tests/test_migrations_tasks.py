@@ -1,4 +1,5 @@
-"""Schema-level tests for the 0006_tasks migration (Slice 2.7).
+"""Schema-level tests for the task tables: 0006_tasks (Slice 2.7) as rebuilt
+by 0017_task_schema (Phase 7, PB-3).
 
 Verifies: migration application/idempotency/failure isolation; task storage
 per FR-TSK-01 (§3.6) with the FR-TSK-02 state dimensions held as independent
@@ -91,8 +92,8 @@ def _seed_roster(connection: sqlite3.Connection) -> None:
     _add_vertical(connection, 1, "logistics")
     _add_vertical(connection, 2, "decor")
     _add_person(connection, "creator", "AH")
-    _add_person(connection, "volunteer-a", "VOLUNTEER")
-    _add_person(connection, "volunteer-b", "VOLUNTEER")
+    _add_person(connection, "volunteer-a", "Volunteer")
+    _add_person(connection, "volunteer-b", "Volunteer")
 
 
 def _add_person(
@@ -100,8 +101,14 @@ def _add_person(
     name: str,
     role: str,
 ) -> int:
+    # PB-5: canonical SRS role plus mandatory unique synthetic phone/roll_number.
+    next_id = int(
+        connection.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM person").fetchone()[0]
+    )
     cursor = connection.execute(
-        "INSERT INTO person (name, role) VALUES (?, ?)", (name, role)
+        "INSERT INTO person (id, name, phone, role, roll_number)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (next_id, name, f"+919800005{next_id:03d}", role, f"TSK-{next_id:03d}"),
     )
     return int(cursor.lastrowid or 0)
 
@@ -226,11 +233,13 @@ def _task(
         "proposal_id": proposal_id,
         "task_type": "INTERNAL",
         "source_vertical_id": 1,
-        "responsible_vertical_id": None,
+        # PB-3/FR-TSK-09: INTERNAL responsible is the source vertical, never NULL.
+        "responsible_vertical_id": 1,
         "creator_id": 1,
         "description": "clip the wires",
         "assignment_mode": "EXPLICIT",
-        "people_needed": 1,
+        # PB-3/FR-TSK-04: EXPLICIT tasks carry people_needed NULL.
+        "people_needed": None,
         "people_needed_unlimited": 0,
         "created_at": _CREATED_AT,
     }
@@ -367,7 +376,7 @@ def test_minimum_task_record_with_defaults(conn: sqlite3.Connection) -> None:
 
 @pytest.mark.parametrize(
     ("task_type", "responsible_vertical_id"),
-    [("INTERNAL", None), ("INTERNAL", 1), ("CROSS_VERTICAL", 2)],
+    [("INTERNAL", 1), ("CROSS_VERTICAL", 2)],
 )
 def test_task_type_consistent_with_verticals(
     conn: sqlite3.Connection,
@@ -388,7 +397,7 @@ def test_task_type_consistent_with_verticals(
 
 @pytest.mark.parametrize(
     ("task_type", "responsible_vertical_id"),
-    [("INTERNAL", 2), ("CROSS_VERTICAL", None), ("CROSS_VERTICAL", 1)],
+    [("INTERNAL", None), ("INTERNAL", 2), ("CROSS_VERTICAL", None), ("CROSS_VERTICAL", 1)],
 )
 def test_task_type_inconsistent_with_verticals_rejected(
     conn: sqlite3.Connection,
@@ -434,7 +443,13 @@ def test_assignment_mode_tokens_recordable(
 ) -> None:
     _seed_generated_bucket(conn)
     proposal_id = _proposal(conn)
-    task_id = _task(conn, proposal_id=proposal_id, assignment_mode=assignment_mode)
+    # PB-3: EXPLICIT stores people_needed NULL; OPEN stores a positive count.
+    task_id = _task(
+        conn,
+        proposal_id=proposal_id,
+        assignment_mode=assignment_mode,
+        people_needed=None if assignment_mode == "EXPLICIT" else 2,
+    )
     assert _row(conn, "task", task_id)["assignment_mode"] == assignment_mode
 
 
@@ -449,7 +464,7 @@ def test_assignment_mode_invalid_rejected(conn: sqlite3.Connection) -> None:
 @pytest.mark.parametrize(
     ("assignment_mode", "people_needed", "people_needed_unlimited"),
     [
-        ("EXPLICIT", 1, 0),
+        ("EXPLICIT", None, 0),
         ("OPEN", 1, 0),
         ("OPEN", 3, 0),
         ("OPEN", None, 1),
@@ -479,6 +494,7 @@ def test_people_needed_encoding_recordable(
     ("assignment_mode", "people_needed", "people_needed_unlimited"),
     [
         ("EXPLICIT", 3, 0),
+        ("EXPLICIT", 1, 0),
         ("EXPLICIT", None, 1),
         ("EXPLICIT", 1, 1),
         ("OPEN", None, 0),

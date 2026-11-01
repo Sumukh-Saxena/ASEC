@@ -76,8 +76,10 @@ def _row(connection: sqlite3.Connection, table: str, row_id: int) -> sqlite3.Row
 
 
 def _add_person(connection: sqlite3.Connection, name: str, role: str) -> int:
+    # PB-5: mandatory unique synthetic phone/roll_number for every roster row.
     cursor = connection.execute(
-        "INSERT INTO person (name, role) VALUES (?, ?)", (name, role)
+        "INSERT INTO person (name, phone, role, roll_number) VALUES (?, ?, ?, ?)",
+        (name, f"ph-{name}", role, f"roll-{name}"),
     )
     return int(cursor.lastrowid or 0)
 

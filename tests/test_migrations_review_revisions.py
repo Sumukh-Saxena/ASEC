@@ -73,17 +73,43 @@ def _add_person(
     discord_user_id: str | None = None,
     person_id: int | None = None,
 ) -> int:
+    # PB-5: mandatory unique synthetic phone/roll_number for every roster row.
+    next_id = (
+        person_id
+        if person_id is not None
+        else int(
+            connection.execute(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM person"
+            ).fetchone()[0]
+        )
+    )
     if person_id is None:
         cursor = connection.execute(
-            "INSERT INTO person (name, role, discord_user_id, active)"
-            " VALUES (?, ?, ?, 1)",
-            (name, role, discord_user_id),
+            "INSERT INTO person (id, name, phone, role, roll_number,"
+            " discord_user_id, active)"
+            " VALUES (?, ?, ?, ?, ?, ?, 1)",
+            (
+                next_id,
+                name,
+                f"+919800008{next_id:03d}",
+                role,
+                f"REV-{next_id:03d}",
+                discord_user_id,
+            ),
         )
     else:
         cursor = connection.execute(
-            "INSERT INTO person (id, name, role, discord_user_id, active)"
-            " VALUES (?, ?, ?, ?, 1)",
-            (person_id, name, role, discord_user_id),
+            "INSERT INTO person (id, name, phone, role, roll_number,"
+            " discord_user_id, active)"
+            " VALUES (?, ?, ?, ?, ?, ?, 1)",
+            (
+                person_id,
+                name,
+                f"+919800008{next_id:03d}",
+                role,
+                f"REV-{next_id:03d}",
+                discord_user_id,
+            ),
         )
     return int(cursor.lastrowid or 0)
 

@@ -101,10 +101,11 @@ def _group(
 
 
 def _person(conn: sqlite3.Connection, person_id: int, name: str, discord_id: str) -> int:
+    # PB-5: canonical Volunteer role and mandatory synthetic phone/roll_number
     conn.execute(
-        "INSERT INTO person (id, name, discord_user_id, role, active)"
-        " VALUES (?, ?, ?, 'VOLUNTEER', 1)",
-        (person_id, name, discord_id),
+        "INSERT INTO person (id, name, discord_user_id, phone, role, active, roll_number)"
+        " VALUES (?, ?, ?, ?, 'Volunteer', 1, ?)",
+        (person_id, name, discord_id, f"+919800002{person_id:03d}", f"REL-{person_id:03d}"),
     )
     return person_id
 

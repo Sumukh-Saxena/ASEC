@@ -290,9 +290,10 @@ def test_bucket_entries_resolve_replies_and_keep_sender_fields(
     conn: sqlite3.Connection,
 ) -> None:
     _group(conn, 1)
+    # PB-5: phone and roll_number mandatory unique synthetic columns
     conn.execute(
-        "INSERT INTO person (id, name, discord_user_id, role, active)"
-        " VALUES (7, 'Neha', '2002', 'AH', 1)"
+        "INSERT INTO person (id, name, discord_user_id, phone, role, active, roll_number)"
+        " VALUES (7, 'Neha', '2002', '+919800003007', 'AH', 1, 'AI-007')"
     )
     bucket_id = _bucket(conn, 1)
     first = _message(

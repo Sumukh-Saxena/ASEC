@@ -119,8 +119,10 @@ def _join_message(
 
 
 def _add_person(connection: sqlite3.Connection) -> int:
+    # PB-5: mandatory unique synthetic phone/roll_number for the roster row.
     cursor = connection.execute(
-        "INSERT INTO person (name, role) VALUES ('reviewer', 'AH')"
+        "INSERT INTO person (name, phone, role, roll_number)"
+        " VALUES ('reviewer', 'ph-reviewer', 'AH', 'roll-reviewer')"
     )
     return int(cursor.lastrowid or 0)
 

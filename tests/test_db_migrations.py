@@ -215,6 +215,99 @@ def test_missing_directory_is_reported(conn: sqlite3.Connection, tmp_path: Path)
         apply_migrations(conn, tmp_path / "nope")
 
 
+def _fk_pragma(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+
+
+_PARENT = "CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT NOT NULL);"
+_CHILD = (
+    "CREATE TABLE child (id INTEGER PRIMARY KEY,"
+    " parent_id INTEGER NOT NULL REFERENCES parent (id) ON DELETE RESTRICT);"
+)
+
+
+def test_migration_may_rebuild_a_parent_table_with_restrict_children(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """Migration 0016/0017 pattern: drop and rename a referenced table.
+
+    ``connect`` always sets ``foreign_keys = ON`` (DR-01), which rejects
+    ``DROP TABLE parent`` while RESTRICT children reference rows in it. The
+    runner therefore applies a file with enforcement disabled and proves the
+    result with ``PRAGMA foreign_key_check`` before it commits.
+    """
+    directory = _migrations_dir(tmp_path)
+    _write(directory, "0001_schema.sql", f"{_PARENT}\n{_CHILD}")
+    _write(
+        directory,
+        "0002_rows.sql",
+        "INSERT INTO parent (id, name) VALUES (1, 'p');\n"
+        "INSERT INTO child (id, parent_id) VALUES (1, 1);",
+    )
+    _write(
+        directory,
+        "0003_rebuild.sql",
+        "CREATE TABLE parent_new (id INTEGER PRIMARY KEY, name TEXT NOT NULL);\n"
+        "INSERT INTO parent_new (id, name) SELECT id, name FROM parent;\n"
+        "DROP TABLE parent;\n"
+        "ALTER TABLE parent_new RENAME TO parent;",
+    )
+
+    assert apply_migrations(conn, directory) == [1, 2, 3]
+    assert conn.execute("SELECT name FROM parent").fetchone()["name"] == "p"
+    assert conn.execute("SELECT count(*) FROM child").fetchone()[0] == 1
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+    child_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'child'"
+    ).fetchone()[0]
+    assert "REFERENCES parent" in child_sql
+    conn.execute("INSERT INTO parent (id, name) VALUES (2, 'q')")
+    conn.execute("INSERT INTO child (id, parent_id) VALUES (2, 2)")
+
+
+def test_migration_ending_with_a_dangling_reference_is_reported(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """The post-file ``foreign_key_check`` replaces enforcement inside the file."""
+    directory = _migrations_dir(tmp_path)
+    _write(directory, "0001_schema.sql", f"{_PARENT}\n{_CHILD}")
+    _write(
+        directory,
+        "0002_dangling.sql",
+        "INSERT INTO parent (id, name) VALUES (1, 'p');\n"
+        "INSERT INTO child (id, parent_id) VALUES (1, 99);",
+    )
+
+    with pytest.raises(MigrationError, match="foreign_key_check"):
+        apply_migrations(conn, directory)
+
+    assert _versions(conn) == [1]
+    assert conn.execute("SELECT count(*) FROM parent").fetchone()[0] == 0
+    assert conn.execute("SELECT count(*) FROM child").fetchone()[0] == 0
+
+
+def test_foreign_keys_pragma_is_restored_after_success_and_failure(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """Enforcement is a connection setting: the runner must always restore it."""
+    directory = _migrations_dir(tmp_path)
+    _write(directory, "0001_schema.sql", f"{_PARENT}\n{_CHILD}")
+    assert _fk_pragma(conn) == 1
+
+    assert apply_migrations(conn, directory) == [1]
+    assert _fk_pragma(conn) == 1
+
+    _write(
+        directory,
+        "0002_dangling.sql",
+        "INSERT INTO child (id, parent_id) VALUES (1, 99);",
+    )
+    with pytest.raises(MigrationError):
+        apply_migrations(conn, directory)
+    assert _fk_pragma(conn) == 1
+
+
 def test_independent_databases_do_not_leak_state(tmp_path: Path) -> None:
     directory = _migrations_dir(tmp_path)
     _write(directory, "0001_create_alpha.sql", _ALPHA)

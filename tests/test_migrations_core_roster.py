@@ -1,4 +1,6 @@
-"""Tests for the 0001_core_roster migration (Slice 2.2 rosters and org entities).
+"""Tests for the 0001_core_roster migration (Slice 2.2 rosters and org entities),
+run against the current schema: 0016 tightens ``person`` (PB-5) so phone and
+roll number are mandatory and the role vocabulary is the four SRS tokens.
 
 Covers SRS FR-ROS-01, FR-AUT-05, FR-AUT-07, FR-ING-09, FR-ING-10, FR-PRP-10,
 DR-01, DR-02, DR-04 and the §9 relational-store constraint.
@@ -81,6 +83,18 @@ def _add_person(
     person_id: int | None = None,
     **fields: Any,
 ) -> int:
+    # PB-5: phone and roll_number are mandatory and unique; synthetic values only.
+    next_id = (
+        person_id
+        if person_id is not None
+        else int(
+            connection.execute(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM person"
+            ).fetchone()[0]
+        )
+    )
+    fields.setdefault("phone", f"+919800006{next_id:03d}")
+    fields.setdefault("roll_number", f"ROS-{next_id:03d}")
     columns = ["name", "role"]
     values: list[Any] = [name, role]
     if person_id is not None:
@@ -244,7 +258,11 @@ def test_duplicate_phone_is_rejected(conn: sqlite3.Connection) -> None:
         _add_person(conn, name="Bilal", person_id=2, phone="9876543210")
 
 
-def test_multiple_null_identifiers_are_allowed(conn: sqlite3.Connection) -> None:
+def test_multiple_people_with_distinct_identifiers_are_allowed(
+    conn: sqlite3.Connection,
+) -> None:
+    """PB-5/FR-ROS-01: phone and roll are mandatory and unique per person;
+    a NULL Discord id stays allowed because the link is not loaded yet."""
     _add_person(conn, name="Asha", person_id=1)
     _add_person(conn, name="Bilal", person_id=2)
     _add_person(conn, name="Chen", person_id=3)
@@ -253,9 +271,9 @@ def test_multiple_null_identifiers_are_allowed(conn: sqlite3.Connection) -> None
         "SELECT roll_number, discord_user_id, phone FROM person ORDER BY id"
     ).fetchall()
     assert len(rows) == 3
-    assert all(row["roll_number"] is None for row in rows)
+    assert len({row["roll_number"] for row in rows}) == 3
+    assert len({row["phone"] for row in rows}) == 3
     assert all(row["discord_user_id"] is None for row in rows)
-    assert all(row["phone"] is None for row in rows)
 
 
 def test_vertical_name_must_be_trimmed(conn: sqlite3.Connection) -> None:

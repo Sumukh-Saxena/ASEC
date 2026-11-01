@@ -78,8 +78,10 @@ def _database_file(connection: sqlite3.Connection) -> str:
 
 
 def _add_person(connection: sqlite3.Connection, name: str, role: str) -> int:
+    # PB-5: mandatory unique synthetic phone/roll_number for every roster row.
     cursor = connection.execute(
-        "INSERT INTO person (name, role) VALUES (?, ?)", (name, role)
+        "INSERT INTO person (name, phone, role, roll_number) VALUES (?, ?, ?, ?)",
+        (name, f"ph-{name}", role, f"roll-{name}"),
     )
     return int(cursor.lastrowid or 0)
 
@@ -189,9 +191,9 @@ def _seed_roster(connection: sqlite3.Connection) -> None:
     _add_vertical(connection, 1, "logistics")
     _add_vertical(connection, 2, "decor")
     _add_person(connection, "creator", "AH")
-    _add_person(connection, "volunteer-a", "VOLUNTEER")
+    _add_person(connection, "volunteer-a", "Volunteer")
     _add_person(connection, "other-ah", "AH")
-    _add_person(connection, "responsible-head", "HEAD")
+    _add_person(connection, "responsible-head", "Head")
 
 
 def _seed_message_chain(connection: sqlite3.Connection) -> None:
@@ -232,7 +234,10 @@ def _announcement_row(
         "proposal_id": proposal_id,
         "accepted_by": 1,
         "accepted_at": _CREATED_AT,
-        "audience_scope": "decor volunteers",
+        # PB-6/FR-REV-10: structured audience replaces the free-text scope.
+        "audience_type": "VERTICAL",
+        "audience_vertical_id": 1,
+        "audience_ah_person_id": None,
     }
     record.update(fields)
     values = [record[column] for column in record]
@@ -252,11 +257,13 @@ def _task_row(
         "proposal_id": proposal_id,
         "task_type": "INTERNAL",
         "source_vertical_id": 1,
-        "responsible_vertical_id": None,
+        # PB-3/FR-TSK-09: INTERNAL responsible is the source vertical, never NULL.
+        "responsible_vertical_id": 1,
         "creator_id": 1,
         "description": "clip the wires",
         "assignment_mode": "EXPLICIT",
-        "people_needed": 1,
+        # PB-3/FR-TSK-04: EXPLICIT tasks store people_needed NULL.
+        "people_needed": None,
         "people_needed_unlimited": 0,
         "created_at": _TASK_CREATED_AT,
     }

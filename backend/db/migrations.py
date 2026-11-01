@@ -11,8 +11,12 @@ schema changes nor a false success record. Checksums are verified for migrations
 were already applied, and files that changed, disappeared, or collide are reported as
 errors instead of being applied.
 
-There is no application schema in this slice; the first real migration arrives with
-the slice that introduces its tables.
+Files listed in :data:`ATOMIC_WINDOWS` are applied as one transaction: either every
+migration in the window lands or none does. A batch runs with ``PRAGMA foreign_keys =
+OFF`` (set before ``BEGIN``, since SQLite ignores the pragma inside a transaction) so a
+table rebuild can drop and rename a referenced table; the batch then runs ``PRAGMA
+foreign_key_check`` before ``COMMIT`` and a violation aborts the whole window. The
+caller's pragma value is restored in a ``finally`` block.
 """
 
 from __future__ import annotations
@@ -46,6 +50,12 @@ class Migration:
     checksum: str
 
 
+# PB-3/PB-5/PB-6 rebuild the task, person and announcement tables together: the
+# window is applied or rolled back as one unit because the new shapes depend on
+# each other (and on the pre-roster window, owner decision O7-1).
+ATOMIC_WINDOWS: tuple[frozenset[int], ...] = (frozenset({16, 17, 18}),)
+
+
 def apply_migrations(
     connection: sqlite3.Connection, directory: str | Path = MIGRATIONS_DIR
 ) -> list[int]:
@@ -72,11 +82,29 @@ def apply_migrations(
             )
 
     executed: list[int] = []
-    for migration in migrations:
+    i = 0
+    while i < len(migrations):
+        migration = migrations[i]
         if migration.version in applied:
+            i += 1
             continue
-        _apply_one(connection, migration)
-        executed.append(migration.version)
+
+        window = next((w for w in ATOMIC_WINDOWS if migration.version in w), None)
+        if window is not None:
+            batch = [
+                m
+                for m in migrations
+                if m.version in window and m.version not in applied
+            ]
+            _apply_batch(connection, batch)
+            for applied_migration in batch:
+                executed.append(applied_migration.version)
+            while i < len(migrations) and migrations[i].version in window:
+                i += 1
+        else:
+            _apply_batch(connection, [migration])
+            executed.append(migration.version)
+            i += 1
     return executed
 
 
@@ -134,16 +162,33 @@ def _ensure_tracking_table(connection: sqlite3.Connection) -> None:
     )
 
 
-def _apply_one(connection: sqlite3.Connection, migration: Migration) -> None:
-    statements = _split_statements(migration.sql)
-    with transaction(connection):
-        for statement in statements:
-            connection.execute(statement)
-        connection.execute(
-            f"INSERT INTO {TRACKING_TABLE} (version, name, checksum, applied_at) "
-            "VALUES (?, ?, ?, ?)",
-            (migration.version, migration.name, migration.checksum, _utc_now()),
-        )
+def _apply_batch(
+    connection: sqlite3.Connection, migrations: list[Migration]
+) -> None:
+    saved_fk = int(connection.execute("PRAGMA foreign_keys").fetchone()[0])
+    try:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        with transaction(connection):
+            for migration in migrations:
+                statements = _split_statements(migration.sql)
+                for statement in statements:
+                    connection.execute(statement)
+                connection.execute(
+                    f"INSERT INTO {TRACKING_TABLE} (version, name, checksum, applied_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (migration.version, migration.name, migration.checksum, _utc_now()),
+                )
+            violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                names = ", ".join(f"{m.version} ({m.name})" for m in migrations)
+                raise MigrationError(
+                    f"Migration batch {names} failed foreign_key_check: {violations}"
+                )
+    finally:
+        if saved_fk:
+            connection.execute("PRAGMA foreign_keys = ON")
+        else:
+            connection.execute("PRAGMA foreign_keys = OFF")
 
 
 def _split_statements(script: str) -> list[str]:

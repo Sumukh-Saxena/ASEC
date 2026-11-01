@@ -130,8 +130,14 @@ def _join_message(
 
 
 def _add_person(connection: sqlite3.Connection) -> int:
+    # PB-5: canonical SRS role plus mandatory unique synthetic phone/roll_number.
+    next_id = int(
+        connection.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM person").fetchone()[0]
+    )
     cursor = connection.execute(
-        "INSERT INTO person (name, role) VALUES ('reviewer', 'Moderator')"
+        "INSERT INTO person (id, name, phone, role, roll_number)"
+        " VALUES (?, 'reviewer', ?, 'Volunteer', ?)",
+        (next_id, f"+919800010{next_id:03d}", f"ATT-{next_id:03d}"),
     )
     return int(cursor.lastrowid or 0)
 
@@ -278,7 +284,8 @@ def test_failed_later_migration_preserves_earlier_migrations(tmp_path: Path) -> 
         (directory / path.name).write_bytes(path.read_bytes())
     (directory / "0900_seed.sql").write_text(
         "INSERT INTO source_group (discord_channel_id) VALUES ('ch-seed');\n"
-        "INSERT INTO person (name, role) VALUES ('Seed Human', 'Admin');\n",
+        "INSERT INTO person (name, phone, role, roll_number)"
+        " VALUES ('Seed Human', 'ph-seed', 'Admin', 'roll-seed');\n",
         encoding="utf-8",
     )
     (directory / "0901_broken.sql").write_text(

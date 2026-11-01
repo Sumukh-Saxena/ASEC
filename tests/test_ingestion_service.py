@@ -101,9 +101,11 @@ def _person(
     name: str = "Asha",
     discord_user_id: str = "u-1",
 ) -> int:
+    # PB-5: phone and roll_number are mandatory unique synthetic columns
     cursor = connection.execute(
-        "INSERT INTO person (name, discord_user_id, role) VALUES (?, ?, 'AH')",
-        (name, discord_user_id),
+        "INSERT INTO person (name, discord_user_id, phone, role, roll_number)"
+        " VALUES (?, ?, ?, 'AH', ?)",
+        (name, discord_user_id, f"+919800004{discord_user_id}", f"ING-{discord_user_id}"),
     )
     return int(cursor.lastrowid or 0)
 

@@ -1,9 +1,11 @@
-"""Schema-level tests for the 0009_announcements migration (Slice 2.10).
+"""Schema-level tests for the 0009_announcements migration (Slice 2.10) as
+rebuilt by 0018_announcement_audience (Phase 7, PB-6).
 
 Verifies: migration application/idempotency; accepted-announcement storage
 per FR-REV-10, FR-REV-01 and §4.1 "Announcement": every accepted proposal is
 accepted by an identified person at a verbatim timestamp, with the audience
-recorded (a named vertical via a foreign key, or free-text scope).
+recorded as a two-token type plus the audience vertical and, for an AH's
+volunteers, the snapshot of the sender whose volunteers are addressed.
 
 Schema-level acceptance integrity is UNIQUE (proposal_id): a proposal can be
 the origin of at most one accepted record. The task/announcement XOR —
@@ -109,8 +111,10 @@ def _join_message(
 
 
 def _add_person(connection: sqlite3.Connection) -> int:
+    # PB-5: mandatory unique synthetic phone/roll_number for the roster row.
     cursor = connection.execute(
-        "INSERT INTO person (name, role) VALUES ('reviewer', 'AH')"
+        "INSERT INTO person (name, phone, role, roll_number)"
+        " VALUES ('reviewer', 'ph-reviewer', 'AH', 'roll-reviewer')"
     )
     return int(cursor.lastrowid or 0)
 
@@ -173,7 +177,10 @@ def _announcement(
         "proposal_id": proposal_id,
         "accepted_by": accepted_by,
         "accepted_at": accepted_at,
-        "audience_scope": "sender AH's volunteers",
+        # PB-6/FR-REV-10: structured audience replaces the free-text scope.
+        "audience_type": "VERTICAL",
+        "audience_vertical_id": 1,
+        "audience_ah_person_id": None,
     }
     record.update(fields)
     values = [record[column] for column in record]
@@ -235,14 +242,16 @@ def test_announcement_minimum_fields_stored_verbatim(conn: sqlite3.Connection) -
     announcement_id = _announcement(
         conn,
         accepted_at="2026-05-01T12:45:00Z",
-        audience_scope="gate volunteers",
+        audience_type="VERTICAL",
     )
     row = _row(conn, "announcement", announcement_id)
     assert row["proposal_id"] == 1
     assert row["accepted_by"] == 1
     assert row["accepted_at"] == "2026-05-01T12:45:00Z"
-    assert row["audience_scope"] == "gate volunteers"
-    assert row["audience_vertical_id"] is None
+    # PB-6: the audience is the two-token type plus a mandatory vertical id.
+    assert row["audience_type"] == "VERTICAL"
+    assert row["audience_vertical_id"] == 1
+    assert row["audience_ah_person_id"] is None
 
 
 def test_announcement_named_vertical_audience(conn: sqlite3.Connection) -> None:
@@ -251,11 +260,11 @@ def test_announcement_named_vertical_audience(conn: sqlite3.Connection) -> None:
         conn,
         accepted_by=1,
         audience_vertical_id=1,
-        audience_scope="sports vertical",
+        audience_type="VERTICAL",
     )
     row = _row(conn, "announcement", announcement_id)
     assert row["audience_vertical_id"] == 1
-    assert row["audience_scope"] == "sports vertical"
+    assert row["audience_type"] == "VERTICAL"
 
 
 def test_announcement_unknown_references_rejected(conn: sqlite3.Connection) -> None:
@@ -273,7 +282,8 @@ def test_announcement_required_fields_not_null(conn: sqlite3.Connection) -> None
     for fields in (
         {"accepted_by": None},
         {"accepted_at": None},
-        {"audience_scope": None},
+        {"audience_type": None},
+        {"audience_vertical_id": None},
     ):
         with pytest.raises(sqlite3.IntegrityError):
             _announcement(conn, **fields)
@@ -284,8 +294,8 @@ def test_announcement_blank_fields_rejected(conn: sqlite3.Connection) -> None:
     for fields in (
         {"accepted_at": ""},
         {"accepted_at": " "},
-        {"audience_scope": ""},
-        {"audience_scope": " "},
+        {"audience_type": ""},
+        {"audience_type": " "},
     ):
         with pytest.raises(sqlite3.IntegrityError):
             _announcement(conn, **fields)

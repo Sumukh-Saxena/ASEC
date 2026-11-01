@@ -80,8 +80,10 @@ def _database_file(connection: sqlite3.Connection) -> str:
 
 
 def _add_person(connection: sqlite3.Connection, name: str, role: str) -> int:
+    # PB-5: mandatory unique synthetic phone/roll_number for every roster row.
     cursor = connection.execute(
-        "INSERT INTO person (name, role) VALUES (?, ?)", (name, role)
+        "INSERT INTO person (name, phone, role, roll_number) VALUES (?, ?, ?, ?)",
+        (name, f"ph-{name}", role, f"roll-{name}"),
     )
     return int(cursor.lastrowid or 0)
 
@@ -201,7 +203,8 @@ def _task(
         "creator_id": 1,
         "description": "carry the decor to logistics",
         "assignment_mode": "EXPLICIT",
-        "people_needed": 1,
+        # PB-3/FR-TSK-04: EXPLICIT tasks store people_needed NULL.
+        "people_needed": None,
         "people_needed_unlimited": 0,
         "created_at": _CREATED_AT,
     }
@@ -221,7 +224,7 @@ def _seed_cross_vertical_task(connection: sqlite3.Connection) -> int:
     _add_vertical(connection, 2, "logistics")
     _add_person(connection, "requester-ah", "AH")
     _add_person(connection, "other-ah", "AH")
-    _add_person(connection, "responsible-head", "HEAD")
+    _add_person(connection, "responsible-head", "Head")
     _add_group(connection)
     _add_message(connection)
     _add_bucket(connection)
