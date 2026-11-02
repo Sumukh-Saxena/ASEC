@@ -321,3 +321,107 @@ def test_independent_databases_do_not_leak_state(tmp_path: Path) -> None:
     finally:
         first.close()
         second.close()
+
+
+def test_real_migrations_reapply_cleanly_after_a_populated_database(
+    tmp_path: Path,
+) -> None:
+    """Plan §9: a real temp-file DB applies once, re-applies as ``[]``.
+
+    The database is populated with one row of every Phase 7-rebuilt shape
+    (person, task, announcement) plus their chains, so the second apply runs
+    against real data and ``PRAGMA foreign_key_check`` proves the rebuild kept
+    the references intact.
+    """
+    connection = connect(tmp_path / "phase7-fresh.db")
+    try:
+        assert apply_migrations(connection) == list(range(1, 19))
+
+        connection.execute("INSERT INTO vertical (id, name) VALUES (1, 'Tech')")
+        connection.execute(
+            "INSERT INTO person (id, name, phone, role, active, roll_number)"
+            " VALUES (1, 'Aarav', '+919844440001', 'AH', 1, 'ROLL-401')"
+        )
+        connection.execute(
+            "INSERT INTO person (id, name, phone, role, active, roll_number)"
+            " VALUES (2, 'Neha', '+919844440002', 'Volunteer', 1, 'ROLL-402')"
+        )
+        connection.execute(
+            "INSERT INTO person_vertical (person_id, vertical_id) VALUES (1, 1)"
+        )
+        connection.execute(
+            "INSERT INTO person_vertical (person_id, vertical_id) VALUES (2, 1)"
+        )
+        connection.execute(
+            "INSERT INTO source_group (id, discord_channel_id, vertical_id)"
+            " VALUES (1, 'chan-401', 1)"
+        )
+        connection.execute(
+            "INSERT INTO source_message (id, source, source_message_id, group_id,"
+            " sender_person_id, event_timestamp, received_at, content)"
+            " VALUES (1, 'discord', 'msg-401', 1, 1,"
+            " '2026-11-02T09:00:00+00:00', '2026-11-02T09:00:00+00:00',"
+            " 'set up the stage')"
+        )
+        connection.execute(
+            "INSERT INTO bucket (id, group_id, start_event_timestamp,"
+            " end_event_timestamp) VALUES (1, 1, '2026-11-02T09:00:00+00:00',"
+            " '2026-11-02T09:00:00+00:00')"
+        )
+        connection.execute(
+            "INSERT INTO bucket_message (bucket_id, message_id, group_id)"
+            " VALUES (1, 1, 1)"
+        )
+        connection.execute(
+            "INSERT INTO processing_attempt (id, stage, bucket_id, started_at,"
+            " outcome) VALUES (1, 'proposal_generation', 1,"
+            " '2026-11-02T09:00:30+00:00', 'SUCCEEDED')"
+        )
+        connection.execute(
+            "INSERT INTO proposal (id, attempt_id, bucket_id, primary_message_id,"
+            " source_vertical_id, ptype, assignment_mode, task_type,"
+            " structurally_valid, generated_at, model_id, model_version,"
+            " prompt_version) VALUES (1, 1, 1, 1, 1, 'TASK', 'EXPLICIT',"
+            " 'INTERNAL', 1, '2026-11-02T09:00:30+00:00', 'model-p', '1.0.0',"
+            " 'prompt-1')"
+        )
+        connection.execute(
+            "INSERT INTO task (id, proposal_id, task_type, source_vertical_id,"
+            " responsible_vertical_id, creator_id, description, assignment_mode,"
+            " people_needed, people_needed_unlimited, created_at)"
+            " VALUES (1, 1, 'INTERNAL', 1, 1, 1, 'set up the stage', 'EXPLICIT',"
+            " NULL, 0, '2026-11-02T09:01:00+00:00')"
+        )
+        connection.execute(
+            "INSERT INTO task_assignee (task_id, person_id, agreement,"
+            " work_status, cancelled, added_at)"
+            " VALUES (1, 2, 'AWAITING', 'NOT_STARTED', 0,"
+            " '2026-11-02T09:01:00+00:00')"
+        )
+        connection.execute(
+            "INSERT INTO task_history (task_id, field_name, old_value, new_value,"
+            " changed_at, actor_person_id, actor_role, actor_vertical_id, reason)"
+            " VALUES (1, 'assignee', NULL, '2', '2026-11-02T09:01:00+00:00', 1,"
+            " 'AH', 1, 'EDIT')"
+        )
+        connection.execute(
+            "INSERT INTO task_attribute (task_id, attr_key, attr_value)"
+            " VALUES (1, 'venue', 'Hall A')"
+        )
+        connection.execute(
+            "INSERT INTO announcement (proposal_id, accepted_by, accepted_at,"
+            " audience_type, audience_vertical_id, audience_ah_person_id)"
+            " VALUES (1, 1, '2026-11-02T09:02:00+00:00', 'AH_VOLUNTEERS', 1, 1)"
+        )
+        connection.execute(
+            "INSERT INTO notification (event_type, recipient_person_id,"
+            " dedupe_key, task_id, delivery_state, created_at)"
+            " VALUES ('TASK_ASSIGNED', 2, 'TASK_ASSIGNED:1:2', 1, 'PENDING',"
+            " '2026-11-02T09:01:00+00:00')"
+        )
+
+        assert apply_migrations(connection) == []
+        assert _versions(connection) == list(range(1, 19))
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        connection.close()

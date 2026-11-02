@@ -31,7 +31,27 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from backend.authorization import (
+    AuthorizationError,
+    require_active_actor,
+)
+from backend.authorization import (
+    record_denial as _record_denial,
+)
 from backend.db.connection import transaction
+from backend.notification_events import (
+    EVENT_CROSS_VERTICAL_REQUEST,
+    EVENT_HEAD_CROSS_VERTICAL_TASK,
+    EVENT_OPEN_TASK_AVAILABLE,
+    EVENT_PROPOSAL_READY,
+    EVENT_TASK_ASSIGNED,
+    approval_request_key,
+    proposal_ready_key,
+    task_assignee_key,
+)
+from backend.notification_events import (
+    stage_notification as _insert_notification,
+)
 
 DEFAULT_ADMIN_ROLE_TOKENS = ("Admin",)
 ADMIN_ROLES_CONFIG_KEY = "ADMIN_ROLES"
@@ -41,16 +61,8 @@ OPERATION_EVAL_EXPORT = "EVAL_EXPORT"
 SUBJECT_TYPE_PROPOSAL = "PROPOSAL"
 SUBJECT_TYPE_EVALUATION = "EVALUATION"
 
-REASON_ACTOR_NOT_FOUND = "ACTOR_NOT_FOUND"
-REASON_ACTOR_INACTIVE = "ACTOR_INACTIVE"
 REASON_NOT_REVIEWER = "NOT_REVIEWER"
 REASON_NOT_ADMIN = "NOT_ADMIN"
-
-EVENT_PROPOSAL_READY = "PROPOSAL_READY"
-EVENT_TASK_ASSIGNED = "TASK_ASSIGNED"
-EVENT_OPEN_TASK_AVAILABLE = "OPEN_TASK_AVAILABLE"
-EVENT_CROSS_VERTICAL_REQUEST = "CROSS_VERTICAL_REQUEST"
-EVENT_HEAD_CROSS_VERTICAL_TASK = "HEAD_CROSS_VERTICAL_TASK"
 
 REVIEW_STATES = ("PENDING", "EDITED", "ACCEPTED", "REJECTED")
 TERMINAL_REVIEW_STATES = ("ACCEPTED", "REJECTED")
@@ -66,7 +78,7 @@ class ProposalNotFoundError(ReviewError):
     """The requested proposal id does not exist."""
 
 
-class ReviewAuthorizationError(ReviewError):
+class ReviewAuthorizationError(AuthorizationError, ReviewError):
     """The caller is not the reviewer and does not hold Admin override."""
 
 
@@ -335,43 +347,6 @@ def _person_row(connection: sqlite3.Connection, person_id: int) -> sqlite3.Row |
     ).fetchone()
 
 
-def _record_denial(
-    connection: sqlite3.Connection,
-    *,
-    actor_person_id: int | None,
-    operation: str,
-    subject_type: str,
-    subject_id: int | None,
-    reason: str,
-) -> None:
-    """Record FR-AUT-06's "recorded" half in its own committed transaction.
-
-    Called before raising ``ReviewAuthorizationError``, outside any outer
-    transaction, so the denial survives the rejected operation's rollback.
-    """
-    known_actor: int | None = None
-    if actor_person_id is not None:
-        row = connection.execute(
-            "SELECT id FROM person WHERE id = ?", (actor_person_id,)
-        ).fetchone()
-        if row is not None:
-            known_actor = int(row["id"])
-    with transaction(connection):
-        connection.execute(
-            "INSERT INTO authorization_denial (actor_person_id, operation,"
-            " subject_type, subject_id, reason, attempted_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                known_actor,
-                operation,
-                subject_type,
-                subject_id,
-                reason,
-                _utc_now(),
-            ),
-        )
-
-
 def _require_active_actor(
     connection: sqlite3.Connection,
     actor_person_id: int,
@@ -380,33 +355,22 @@ def _require_active_actor(
     subject_type: str,
     subject_id: int | None,
 ) -> sqlite3.Row:
-    """Authenticate the caller against the roster before any operation.
+    """Phase 6 adapter over the shared active-actor check (plan §4.4).
 
-    A missing or inactive actor is recorded in ``authorization_denial``
-    (its own transaction) before ``ReviewAuthorizationError`` is raised.
+    The shared helper raises :class:`backend.authorization.AuthorizationError`;
+    review callers keep catching ``ReviewAuthorizationError`` with the same
+    reason string.
     """
-    actor = _person_row(connection, actor_person_id)
-    if actor is None:
-        _record_denial(
+    try:
+        return require_active_actor(
             connection,
-            actor_person_id=actor_person_id,
+            actor_person_id,
             operation=operation,
             subject_type=subject_type,
             subject_id=subject_id,
-            reason=REASON_ACTOR_NOT_FOUND,
         )
-        raise ReviewAuthorizationError(REASON_ACTOR_NOT_FOUND)
-    if int(actor["active"]) != 1:
-        _record_denial(
-            connection,
-            actor_person_id=actor_person_id,
-            operation=operation,
-            subject_type=subject_type,
-            subject_id=subject_id,
-            reason=REASON_ACTOR_INACTIVE,
-        )
-        raise ReviewAuthorizationError(REASON_ACTOR_INACTIVE)
-    return actor
+    except AuthorizationError as exc:
+        raise ReviewAuthorizationError(exc.reason) from exc
 
 
 def _authorize(
@@ -970,37 +934,6 @@ def _active_role_ids(
 # ---------------------------------------------------------------------------
 
 
-def _insert_notification(
-    connection: sqlite3.Connection,
-    *,
-    event_type: str,
-    recipient_person_id: int,
-    dedupe_key: str,
-    created_at: str,
-    proposal_id: int | None = None,
-    task_id: int | None = None,
-    approval_request_id: int | None = None,
-    announcement_id: int | None = None,
-) -> bool:
-    cursor = connection.execute(
-        "INSERT INTO notification (event_type, recipient_person_id, dedupe_key,"
-        " proposal_id, task_id, approval_request_id, announcement_id,"
-        " delivery_state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)"
-        " ON CONFLICT (dedupe_key) DO NOTHING",
-        (
-            event_type,
-            recipient_person_id,
-            dedupe_key,
-            proposal_id,
-            task_id,
-            approval_request_id,
-            announcement_id,
-            created_at,
-        ),
-    )
-    return cursor.rowcount == 1
-
-
 def _insert_proposal_ready(
     connection: sqlite3.Connection, proposal_id: int, recipient_person_id: int, created_at: str
 ) -> bool:
@@ -1008,7 +941,7 @@ def _insert_proposal_ready(
         connection,
         event_type=EVENT_PROPOSAL_READY,
         recipient_person_id=recipient_person_id,
-        dedupe_key=f"{EVENT_PROPOSAL_READY}:{proposal_id}",
+        dedupe_key=proposal_ready_key(proposal_id),
         proposal_id=proposal_id,
         created_at=created_at,
     )
@@ -1650,8 +1583,8 @@ def _materialize_task(
                     connection,
                     event_type=EVENT_TASK_ASSIGNED,
                     recipient_person_id=assignee.person_id,
-                    dedupe_key=(
-                        f"{EVENT_TASK_ASSIGNED}:{task_id}:{assignee.person_id}"
+                    dedupe_key=task_assignee_key(
+                        EVENT_TASK_ASSIGNED, task_id, assignee.person_id
                     ),
                     task_id=task_id,
                     created_at=now,
@@ -1665,8 +1598,8 @@ def _materialize_task(
                     connection,
                     event_type=EVENT_OPEN_TASK_AVAILABLE,
                     recipient_person_id=person_id,
-                    dedupe_key=(
-                        f"{EVENT_OPEN_TASK_AVAILABLE}:{task_id}:{person_id}"
+                    dedupe_key=task_assignee_key(
+                        EVENT_OPEN_TASK_AVAILABLE, task_id, person_id
                     ),
                     task_id=task_id,
                     created_at=now,
@@ -1679,9 +1612,8 @@ def _materialize_task(
                     connection,
                     event_type=EVENT_CROSS_VERTICAL_REQUEST,
                     recipient_person_id=recipient,
-                    dedupe_key=(
-                        f"{EVENT_CROSS_VERTICAL_REQUEST}:{approval_request_id}:"
-                        f"{recipient}"
+                    dedupe_key=approval_request_key(
+                        approval_request_id, recipient
                     ),
                     approval_request_id=approval_request_id,
                     created_at=now,
@@ -1694,8 +1626,8 @@ def _materialize_task(
                     connection,
                     event_type=EVENT_HEAD_CROSS_VERTICAL_TASK,
                     recipient_person_id=person_id,
-                    dedupe_key=(
-                        f"{EVENT_HEAD_CROSS_VERTICAL_TASK}:{task_id}:{person_id}"
+                    dedupe_key=task_assignee_key(
+                        EVENT_HEAD_CROSS_VERTICAL_TASK, task_id, person_id
                     ),
                     task_id=task_id,
                     created_at=now,

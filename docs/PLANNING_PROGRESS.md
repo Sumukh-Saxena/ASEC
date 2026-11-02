@@ -47,11 +47,15 @@ tests or commits. This file is the first thing a resumed session must read after
   FR-ING-02/04/AI-03/NFR-SEC-04/AC-21/BR-05/09/NFR-AUD-03/NFR-CON-02 labelled reused;
   Phase 9 clock SQL seed conflict and replay time-basis wording fixed; Phase 10 provenance
   wording fixed; Phase 11 `mark_read` ownership check added.
+- Phase 7 implemented and green (2026-10-30): C1–C6 checkpoints recorded in
+  `docs/PHASE7_PROGRESS.md`; C1–C3 committed (`a1a2bd9`, `35b2f1e`), C4–W7 in the working
+  tree (not staged). Final battery `1133 passed in 95.24s (0:01:35)`, `ruff` clean, `mypy`
+  18 files clean, `python -m backend --version` = 0.0.1, 10/10 mutations red, audits clean;
+  §15 filled in `docs/PHASE7_PLAN.md` (711 → 865 lines).
 
 ## Next
-- Nothing mandatory in planning. The owner's next actions are (1) answer the ROADMAP §7
-  OWNER items that gate Phase 7 W3/W6, (2) start Phase 7 with
-  `docs/prompts/PHASE7_EXECUTE.md`. Optional: a test-typing cleanup slice (89 pre-existing
+- Commit the Phase 7 C4–W7 tree at the green checkpoint, then start Phase 8 with
+  `docs/prompts/PHASE8_EXECUTE.md`. Optional: a test-typing cleanup slice (89 pre-existing
   mypy errors in tests); never blocking.
 
 ## Document order (do not reorder)

@@ -709,3 +709,161 @@ details. Before any AI call, phone numbers, email addresses and government-ID-li
 numbers shall be masked. The originals stay in the backend only.
 - **EIR-03 (excerpt)** Mentions are passed as opaque handles, and the backend maps them
 back to people.
+
+---
+
+## 15. Implementation record (2026-10-29/30 - filled at W7)
+
+W1-W3 were committed by the owner at their green checkpoints (`a1a2bd9` C1-C2,
+`35b2f1e` C3). W4-W7 are present in the working tree and were not staged, committed or
+pushed by this session.
+
+### 15.1 Files actually changed (nothing staged or committed)
+
+| File | Status | Content |
+|---|---|---|
+| `backend/ai_context.py` | new (244 lines) | One request-copy implementation both AI stages share: `mask_pii` first, then Discord markup rewritten to `@m1, @m2, ...`; reply references resolved to internal message ids; bucket entries order stored mentions before content mentions (EIR-03, NFR-SEC-04, DR-03, AC-21). |
+| `backend/relevance.py` | modified (C1) | Classifier request rebuilt from the shared helper; no raw Discord id reaches the adapter (EIR-03). |
+| `backend/proposals.py` | modified (C1-C2) | Generator request uses the shared helper; `ProposalPolicy.require_source_vertical_membership` now defaults to `True` with the documented `...=0` escape hatch (FR-PRP-02). |
+| `backend/db/migrations.py` | modified (+75) | Atomic window for 0016-0018: enforcement off before `BEGIN`, `PRAGMA foreign_key_check` before `COMMIT`, caller pragma restored in `finally`. |
+| `backend/db/migrations/0016_roster_integrity.sql` | new (58 lines) | PB-5 person/vertical rebuild and guards. |
+| `backend/db/migrations/0017_task_schema.sql` | new (83 lines) | PB-3 task/task_assignee rebuild, CHECKs and the partial unique index. |
+| `backend/db/migrations/0018_announcement_audience.sql` | new (50 lines) | PB-6 structured announcement audience with the sender snapshot. |
+| `backend/authorization.py` | new (126 lines) | `AuthorizationError`, `record_denial` (own committed transaction), `require_active_actor` (FR-AUT-06, FR-AUT-08). |
+| `backend/notification_events.py` | new (91 lines) | Lifecycle labels, dedupe-key builders and `stage_notification` (FR-NOT-02/05). |
+| `backend/tasks.py` | new (1252 lines) | Single visibility filter, live-row loader, `TaskSummary`/`TaskProgress` read model, and the six lifecycle writes with history and notifications (FR-TSK-01..13, 16). |
+| `backend/review.py` | modified (+39/-107) | Uses the shared denial recorder, actor check and notification staging; `_record_denial`/`_insert_notification` and `ReviewAuthorizationError` kept as aliases (behaviour-neutral W4). |
+| `tests/test_ai_context.py` | new (348 lines, 14 tests) | Masking/markup/handle/reply rules. |
+| `tests/test_migrations_roster_integrity.py` | new (383 lines, 16 tests) | 0016 behaviour, guards and atomic failure. |
+| `tests/test_migrations_task_schema.py` | new (377 lines, 11 tests) | 0017 behaviour, CHECKs, copy and atomic failure. |
+| `tests/test_migrations_announcement_audience.py` | new (318 lines, 10 tests) | 0018 audience snapshot and guards. |
+| `tests/test_authorization.py` | new (207 lines, 8 tests) | Denial survives rollback, null actor, active-actor check, review aliases. |
+| `tests/test_notification_events.py` | new (260 lines, 8 tests) | Idempotency, key formats, six lifecycle labels, review alias. |
+| `tests/test_task_service.py` | new (1460 lines, 45 tests) | Visibility per role, progress, claim capacity and race, agreement, status, edit/stale, reassign, cancel, hidden ids, concurrent edits. |
+| `tests/test_db_migrations.py` | modified (+93 at C3, +104 at W7) | Populated re-apply test, atomic-window and pragma tests. |
+| `tests/test_relevance_service.py`, `tests/test_proposal_service.py`, `tests/test_review_service.py`, `tests/test_ingestion_service.py`, 11 migration test files | modified | Request-shape, eligibility, window-count and fixture updates required by C1-C3; no assertion weakened. |
+| `docs/PHASE7_PLAN.md`, `docs/PHASE7_PROGRESS.md`, `docs/PLANNING_PROGRESS.md` | modified | This record and the phase status. |
+
+Requirement coverage implemented and tested: **FR-AUT-06/08, FR-NOT-02/05, FR-PRP-02,
+FR-TSK-01..13, FR-TSK-16, FR-UI-02, EIR-03, AC-08, AC-16, AC-19, AC-21**, with
+**NFR-SEC-03(c)**, **NFR-SEC-04**, **NFR-CON-02**, **NFR-AUD-03**, **DR-03/DR-04**,
+schema points **PB-3/PB-5/PB-6** and owner decisions **O7-1..O7-7** (authority tokens in
+15.6). AC-09's no-inference rule is structural: an assignment is created `AWAITING` and
+only `set_agreement` can move it.
+
+### 15.2 Real test totals
+
+Every row is observed output from `pytest` with no extra `-q`; the phase is strictly
+additive (no pre-existing test was removed, skipped or weakened).
+
+| Checkpoint | Full suite | Delta |
+|---|---|---|
+| C1 (W1) | `1031 passed in 175.22s (0:02:55)` | +14 `test_ai_context.py` |
+| C2 (W2) | `1032 passed in 134.29s (0:02:14)` | +1 eligibility default test |
+| C3 (W3) | `1071 passed in 268.61s (0:04:28)` | +39 migration/schema tests |
+| C4 (W4) | `1087 passed in 379.78s (0:06:19)` | +16 shared-helper tests |
+| C5 (W5) | `1102 passed in 214.00s (0:03:33)` | +15 read-model tests |
+| C6 (W6) | `1132 passed in 372.04s (0:06:12)` | +30 write tests |
+| W7 (final) | `1133 passed in 95.24s (0:01:35)` | +1 populated re-apply test |
+
+Targeted runs at W7 (real output): migrations trio `37 passed in 7.09s`;
+`tests/test_authorization.py tests/test_notification_events.py` `16 passed in 0.45s`;
+`tests/test_task_service.py tests/test_ai_context.py` `59 passed in 1.84s`;
+`tests/test_relevance_service.py tests/test_proposal_service.py
+tests/test_review_service.py` `299 passed in 146.30s (0:02:26)`; `tests/test_db_migrations.py`
+`19 passed in 0.34s`; `tests/test_task_service.py` `45 passed in 14.04s`.
+
+### 15.3 Mutation battery (RED -> restore), 10/10 killed
+
+The helper lives outside the repo (`C:\Users\sumuk\AppData\Local\Temp\opencode\phase7_mutations.py`).
+Each mutation asserts exactly one anchor occurrence, applies the edit, runs the focused
+test with plain `pytest`, restores the original bytes in `finally`, and compares SHA-256.
+Final line of the run: `battery complete: 10 mutations, 0 survived`.
+
+| # | Mutation | Target test | Observed RED |
+|---|---|---|---|
+| 1 | `approval_state` filter removed from `_live_task_row` | `test_live_task_row_treats_hidden_and_cancelled_as_not_found` | `assert <sqlite3.Row object ...> is None` |
+| 2 | `cancellation` filter removed from `visible_tasks` | `test_visible_tasks_hides_cancelled_unless_requested` | `assert [1, 2] == [1]` |
+| 3 | claim capacity uses `>` instead of `>=` | `test_claim_rejects_the_sixth_claim` | `Failed: DID NOT RAISE TaskCapacityError` |
+| 4 | claim count read moved outside `BEGIN IMMEDIATE` | `test_two_threads_claiming_the_last_place_produce_one_winner` | `assert ['ACCEPTED', 'ACCEPTED'] == ['ACCEPTED', 'FULL']` |
+| 5 | `COMPLETED` may move back to `IN_PROGRESS` | `test_work_status_transitions_and_completion_notice` | `assert 'INVALID_TRANSITION' == 'COMPLETED_FINAL'` |
+| 6 | `edit_task` version comparison removed | `test_stale_edit_returns_current_values_and_records_both_attempts` | `Failed: DID NOT RAISE StaleTaskVersionError` |
+| 7 | `record_denial` removed before raising | `test_include_hidden_requires_a_current_admin` | `ValueError: not enough values to unpack (expected 1, got 0)` |
+| 8 | eligibility membership default reverted to `False` | `test_membership_is_on_by_default_for_outside_vertical_sender` | `assert False is True` |
+| 9 | `rewrite_markup` passes an unmapped user id through | `test_rewrite_markup_leaves_no_raw_discord_id` | `assert '<@' not in '@m1 <@!2003...'` |
+| 10 | 0018 maps `AH_VOLUNTEERS` to the accepting Admin | `test_ah_announcement_snapshots_the_primary_sender` | `assert 1 == 3` |
+
+Restores all matched: `backend/tasks.py` `411bc8fb52e7f4f1` (mutations 1-7),
+`backend/proposals.py` `b2d952bbd7c820ef` (8), `backend/ai_context.py`
+`460b81fc006833af` (9), `backend/db/migrations/0018_announcement_audience.sql`
+`738de121c9c9dd31` (10); every row printed `RESTORE OK` with the same digest before and
+after.
+
+### 15.4 Final check battery (exact commands, real observed output)
+
+| Check | Result |
+|---|---|
+| `.venv\Scripts\python.exe -m pytest` | `1133 passed in 95.24s (0:01:35)`, exit 0 |
+| `.venv\Scripts\python.exe -m ruff check .` | `All checks passed!`, exit 0 |
+| `.venv\Scripts\python.exe -m mypy` | `Success: no issues found in 18 source files`, exit 0 |
+| `.venv\Scripts\python.exe -m backend --version` | `0.0.1`, exit 0 |
+| `git diff --check` | silent, exit 0 |
+| `git status --short` | modified `backend/review.py`, `docs/PHASE7_PROGRESS.md`, `tests/test_db_migrations.py`; untracked `backend/authorization.py`, `backend/notification_events.py`, `backend/tasks.py`, `tests/test_authorization.py`, `tests/test_notification_events.py`, `tests/test_task_service.py`; nothing staged |
+
+The populated re-apply DoD item is a test, not a claim:
+`test_real_migrations_reapply_cleanly_after_a_populated_database` applies the real
+migrations to a temp file DB, inserts one row of every Phase 7-rebuilt shape plus its
+chain, applies again and asserts `[]`, versions 1-18 and an empty
+`PRAGMA foreign_key_check` (`19 passed in 0.34s` for the file).
+
+### 15.5 Read-only audit (findings and citations)
+
+The plan's `Select-String -Path backend` form rejects a directory, so each audit enumerated
+files first (`Get-ChildItem backend -Recurse -File -Include *.py,*.sql | Where-Object {
+$_.FullName -notmatch '__pycache__' } | Select-String`). No file was modified.
+
+| Audit question | Evidence |
+|---|---|
+| Are raw Discord identifiers read anywhere but ingest? | `sender_discord_user_id|discord_channel_id` appears only in `backend/db/migrations/0001_core_roster.sql` (10, 12, 13), `0002_source_messages.sql` (7, 20) and `backend/ingest.py` (write/ingest paths). `relevance.py`/`proposals.py` no longer read the raw columns after W1, so the audit is narrower than the plan predicted. |
+| Is there an ad-hoc task query outside the task/review modules? | `FROM task` matches only `backend/review.py:1407`, `backend/tasks.py` (read model and writes) and `0017_task_schema.sql:50,74` (the copy statements). |
+| Does the task module read message content? | `mask_pii|content` in `backend/tasks.py` matches one docstring line (18, "Authorizations never read message content"); no `source_message.content` access. |
+| Is task history append-only? | `INSERT INTO task_history` exists at `backend/tasks.py:516` and `backend/review.py:1530`; there is no `UPDATE task_history` or `DELETE FROM task_history` anywhere in `backend`. |
+| Does every protected write authenticate first? | Each public task function calls `_require_actor` before opening its `BEGIN IMMEDIATE` transaction; `visible_tasks` requires a current actor for `include_hidden` (Admin). Denials use `record_denial` in its own transaction. |
+| Is the write set limited to task scope? | Writes are `task`, `task_assignee`, `task_attribute`, `task_history`, `notification` and `authorization_denial` only; no proposal or announcement row is written by `backend/tasks.py`. |
+| Are hidden tasks unreachable by id? | `_live_task_row` filters `approval_state IN ('NOT_REQUIRED','APPROVED')` and `cancellation = 'ACTIVE'`; `test_hidden_task_ids_behave_as_not_found_for_every_mutator` covers all six mutators. |
+| Working-tree state | `git status --short` lists only the intended files above; nothing is staged. |
+
+### 15.6 Deviations from the plan (and why)
+
+| # | Planned | Actual | Why |
+|---|---|---|---|
+| 1 | 0017 CHECK `(people_needed IS NULL) != (people_needed_unlimited = 1)` | Valid PB-3 encoding: unlimited is `0` or NULL; `OPEN` iff `(people_needed IS NULL) = (people_needed_unlimited = 1)`; `EXPLICIT` iff NULL and `0` | The planned CHECK is false for the legal `OPEN, 3, 0` row (recorded at C3). |
+| 2 | Per-file `PRAGMA defer_foreign_keys = ON` | Runner turns enforcement off before `BEGIN`, runs the atomic window, checks foreign keys before `COMMIT`, restores the caller pragma | `DROP TABLE person/task/announcement` is rejected with RESTRICT children while enforcement is on, even inside one transaction (recorded at C3). |
+| 3 | One transaction per migration file | 0016-0018 run as one `ATOMIC_WINDOWS` transaction | O7-1: a failure must leave version 15 and the old shapes intact (recorded at C3). |
+| 4 | 0016/0018 copy guards; 0017 guard too | 0016/0018 use `BEFORE INSERT` triggers; 0017 has none | Every pre-window state the plan listed is already impossible under 0006's CHECK/UNIQUE constraints, so a 0017 guard could never fire; the rebuilt CHECKs and partial index are the guard (recorded at C3). |
+| 5 | `TaskSummary` field list in 4.5 | Adds `description` | FR-TSK-12/AC-19 require a stale edit to show current values; the snapshot is the read model, so it must carry the editable description. |
+| 6 | `update_work_status(connection, task_id, actor_person_id, status)` | Adds keyword-only `assignee_person_id` (defaults to the actor) | O7-5 Admin override needs a target person; self-service callers are unchanged and the history reason distinguishes `ADMIN_OVERRIDE`. |
+| 7 | Authority tokens left to 4.6 prose | Cancel: creator, Head of responsible vertical, Admin (O7-4). On-behalf agreement: Admin only, history reason `ADMIN_ON_BEHALF` (O7-3). Status override: Admin only, `ADMIN_OVERRIDE` (O7-5). Head visibility: source or responsible vertical plus creator; Volunteer: active non-denied assignment plus live `OPEN` tasks in the responsible vertical (FR-TSK-01/02) | O7-3/O7-4/O7-5 answers fix the tokens; the visibility scopes are the tested reading of FR-TSK-01/02 and NFR-SEC-03(c). |
+| 8 | W4 extraction changes no behaviour | `ReviewAuthorizationError` now subclasses both `AuthorizationError` and `ReviewError`; `TaskAuthorizationError` subclasses `AuthorizationError` and `TaskError`; review keeps module-level aliases | Phase 6 callers and `pytest.raises(ReviewAuthorizationError)` keep working; the full suite stayed green (C4: 1087, all 1071 pre-existing). |
+
+### 15.7 Known gaps and open risks (not changed here)
+
+1. **No HTTP/UI surface.** Phase 7 exposes Python services only; routing, sessions and
+   the volunteer screens belong to Phase 12, so FR-UI-02 is satisfied at the read-model
+   level, not end to end.
+2. **Notifications are staged, not delivered.** Every lifecycle event inserts a
+   `PENDING` row through `stage_notification`; FCM delivery and retry are Phase 11
+   (FR-NOT-02/05).
+3. **Hidden PENDING assignments still exist.** `review.py` writes `task_assignee` rows
+   for a hidden PENDING task (Phase 6 record, 15.7 item 3); the Phase 7 read model hides
+   them, and `test_visible_tasks_hides_pending_and_denied` pins that.
+4. **History model columns are NULL for human writes.** `actor_model_id`/
+   `actor_model_version` stay NULL because only the backend writes task state; AI
+   remains stateless and never creates or changes a task (FR-TSK-14, FR-TSK-15).
+5. **`mypy` scope.** The agreed gate is `mypy` over `backend` (18 files); `tests/` is not
+   type-checked in any phase.
+6. **Uncommitted by rule.** W4-W7 are green but unstaged; the owner commits at each green
+   checkpoint.
+7. **Plan 10 "Phase 8 place".** No such marker exists in `backend`; the integration point
+   turned out to be unnecessary because Phase 8 consumes the same `proposal`/`task`
+   tables through the existing services, so nothing was invented.
