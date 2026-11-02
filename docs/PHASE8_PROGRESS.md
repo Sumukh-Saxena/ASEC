@@ -1,0 +1,5 @@
+# Phase 8 progress
+
+C1 2026-11-02: plain pytest 1144 passed; ruff All checks passed; mypy no issues in 19 source files; migrations first apply 18 (0001-0018, last 18) then re-apply []; git status only untracked backend/approvals.py and tests/test_approval_service.py, nothing staged.
+C2 2026-11-02: plain pytest 1162 passed; ruff All checks passed; mypy no issues in 19 source files; migrations first apply 18 (0001-0018, last 18) then re-apply []; git status only untracked backend/approvals.py, docs/PHASE8_PROGRESS.md and tests/test_approval_service.py, nothing staged.
+C3 2026-11-02: plain pytest 1171 passed (W3/W4 targeted run: tests/test_approval_service.py + tests/test_review_service.py 147 passed); ruff All checks passed; mypy no issues in 19 source files; migrations first apply 18 (0001-0018, last 18) then re-apply []; git status modified backend/notification_events.py and backend/review.py, untracked backend/approvals.py, tests/test_approval_service.py, docs/PHASE8_PROGRESS.md, nothing staged.

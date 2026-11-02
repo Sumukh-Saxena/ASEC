@@ -1572,6 +1572,28 @@ def _materialize_task(
                 " VALUES (?, ?)",
                 (approval_request_id, recipient),
             )
+        request_actor_id = (
+            int(reviewer_person_id)
+            if reviewer_person_id is not None
+            else actor_person_id
+        )
+        request_reason = _optional_note(request_message) or "CROSS_VERTICAL_REQUEST"
+        connection.execute(
+            "INSERT INTO task_history (task_id, field_name, old_value,"
+            " new_value, changed_at, actor_person_id, actor_role,"
+            " actor_vertical_id, reason)"
+            " VALUES (?, 'APPROVAL_REQUEST', NULL, 'PENDING', ?, ?, ?, ?, ?)",
+            (
+                task_id,
+                now,
+                request_actor_id,
+                sender_role,
+                _actor_vertical_id(
+                    connection, request_actor_id, source_vertical_id
+                ),
+                request_reason,
+            ),
+        )
 
     staged = 0
     hidden = approval_state == "PENDING"
