@@ -52,11 +52,15 @@ tests or commits. This file is the first thing a resumed session must read after
   tree (not staged). Final battery `1133 passed in 95.24s (0:01:35)`, `ruff` clean, `mypy`
   18 files clean, `python -m backend --version` = 0.0.1, 10/10 mutations red, audits clean;
   §15 filled in `docs/PHASE7_PLAN.md` (711 → 865 lines).
+- Phase 8 executed and green (2026-11-03): W5 complete; full suite 1171 passed, `ruff`/`mypy`
+  clean (19 files), 8/8 mutations red, audits clean, no migration added; §15 filled in
+  `docs/PHASE8_PLAN.md` (447 → 564 lines). Nothing staged or committed.
 
 ## Next
-- Commit the Phase 7 C4–W7 tree at the green checkpoint, then start Phase 8 with
-  `docs/prompts/PHASE8_EXECUTE.md`. Optional: a test-typing cleanup slice (89 pre-existing
-  mypy errors in tests); never blocking.
+- Commit the Phase 8 tree at the green checkpoint, then start Phase 9 with
+  `docs/prompts/PHASE9_EXECUTE.md` (PB-1/PB-2/PB-7). Do not start Phase 9 in the W5
+  session. Optional: a test-typing cleanup slice (89 pre-existing mypy errors in tests);
+  never blocking.
 
 ## Document order (do not reorder)
 1. ROADMAP (done) → 2. PHASE7 (done) → 3. PHASE8 (done) → 4. PHASE9 (done) → 5. PHASE10

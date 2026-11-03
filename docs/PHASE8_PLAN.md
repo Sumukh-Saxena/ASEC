@@ -445,3 +445,120 @@ without its state flip.
   winner.
 - **NFR-SEC-03 (excerpt)** An approval request (FR-XV-03) shows the approver the task
   description and the requester's note, not the source chat.
+
+---
+
+## 15. Implementation record (2026-11-02/03 — filled at W5)
+
+### 15.1 Baseline refresh at W5 start
+
+Read-only commands run before any edit, with real output:
+
+- `git log --oneline -n 3`: `b8d9da2` Phase 8 C3: cross-vertical approval decisions,
+  notifications and request history; `88b42da` Phase 7 complete; `35b2f1e` Phase 7 C3.
+- `git status --short`: empty (clean tree; nothing staged).
+- `.venv\Scripts\python.exe -m pytest`: **1171 passed in 239.45s (0:03:59)**, exit 0.
+- `.venv\Scripts\python.exe -m ruff check .`: **All checks passed!**
+- `.venv\Scripts\python.exe -m mypy`: **Success: no issues found in 19 source files**.
+
+### 15.2 Files actually changed (nothing staged or committed)
+
+| File | Status | Content |
+|---|---|---|
+| `backend/approvals.py` | new (521 lines) | W1 read model + read authorization (`ApprovalView`, `get_approval_request`, `list_pending_approvals`); W2 `decide_request` (`BEGIN IMMEDIATE`, first-wins, state flip without `task.version` bump, history row); W3 decision/assignment notification staging. |
+| `backend/notification_events.py` | modified (+8) | `EVENT_CROSS_VERTICAL_DECISION` and `cross_vertical_decision_key`; reuses the Phase 7 `stage_notification`/`task_assignee_key` helpers. |
+| `backend/review.py` | modified (+22) | W4/FR-XV-06: one `APPROVAL_REQUEST` history row inside the existing accept transaction, with requester role/vertical and the request message (or `CROSS_VERTICAL_REQUEST`). |
+| `tests/test_approval_service.py` | new (958 lines, 38 tests) | W1–W4 coverage: authorization, first-wins, concurrency, approve/deny, history, read-model leak pin, notification staging, Phase 6 request-history follow-through, Head regression. |
+| `docs/PHASE8_PROGRESS.md` | new (5 lines) | C1–C3 checkpoint log (real totals and hashes at each checkpoint). |
+| `docs/PHASE8_PLAN.md` | modified | This §15 record only. |
+
+No migration file was added; the schema window remains `0001`–`0018`. No new runtime
+dependency.
+
+Requirement coverage implemented and tested: **FR-XV-04/05/06, FR-AUT-01/05/06, AC-14/15,
+NFR-CON-02, NFR-SEC-03(c), BR-08, FR-NOT-01/05**, with owner decisions **O8-1, O8-2, O8-3**.
+
+### 15.3 Real test totals
+
+| Suite | Result (real output) |
+|---|---|
+| Full suite, `.venv\Scripts\python.exe -m pytest` | **1171 passed in 249.95s (0:04:09)**, exit 0 |
+| `tests/test_approval_service.py` + `tests/test_review_service.py` | **147 passed in 15.16s**, exit 0 |
+| `tests/test_task_service.py` + `tests/test_authorization.py` + `tests/test_notification_events.py` | **61 passed in 5.65s**, exit 0 |
+
+`tests/test_approval_service.py` contains 38 tests (the focused runs above deselected 36
+when selecting two cases). The file was written before `backend/approvals.py`; its RED
+evidence is the checkpoint log in `docs/PHASE8_PROGRESS.md` plus the mutation battery below.
+
+### 15.4 Mutation battery (RED → restore), 8/8 killed
+
+Each mutation was applied textually to one file, the focused test(s) were run, the file was
+restored by the exact reverse edit, and SHA-256 was compared with the pre-mutation value.
+Pre-mutation hashes: `backend/approvals.py`
+`394D597E897A0371DD54201A2932DF3C5C4F3B4DE7C1B1D027D390DF14471E0B`; `backend/review.py`
+`94679347AC5F6289B620B24221EF8A14FBC548FDD5187E890BE75D0C2FC20058`. All eight restores
+printed the matching hash and `git status --short` stayed empty.
+
+| Mutation | Target test | Observed RED |
+|---|---|---|
+| Drop the `approval_recipient` check | `test_non_recipient_decision_is_denied_and_recorded[non-recipient-ah]` | `Failed: DID NOT RAISE ApprovalAuthorizationError` |
+| Drop the current-role/vertical re-check | `test_demoted_recipient_decision_is_denied_and_recorded`, `test_relocated_head_decision_is_denied_and_recorded` | Both `Failed: DID NOT RAISE ApprovalAuthorizationError` |
+| Allow overwriting an existing decision | `test_first_decision_wins_and_late_attempt_changes_nothing` | `AssertionError: assert True is False` (`late.changed`) |
+| Flip `approval_state` to the opposite value | `test_approve_flips_state_without_bumping_version_and_goes_live`, `test_deny_keeps_task_hidden_and_keeps_the_decision` | `assert 'DENIED' == 'APPROVED'`; `assert 'APPROVED' == 'DENIED'` |
+| Skip `OPEN_TASK_AVAILABLE`/`TASK_ASSIGNED` staging on approval | `test_approval_stages_requester_and_explicit_assignee_rows`, `test_approval_of_open_task_notifies_responsible_volunteers` | `ValueError: not enough values to unpack (expected 1, got 0)`; `assert [] == [8, 14]` |
+| Skip the request history insert in `review.py` | `test_accept_records_the_request_in_task_history`, `test_accept_without_request_message_records_a_stable_reason` | Both `ValueError: not enough values to unpack (expected 1, got 0)` |
+| Add `source_message.content` to `ApprovalView` | `test_read_view_has_no_source_content_or_bucket_fields` | `assert not True` (field-name token match) |
+| Remove the decision message from the history reason/requester payload | `test_decision_history_records_actor_role_and_vertical` | `assert 'CROSS_VERTICAL_DECISION' == 'bring the van'` |
+
+### 15.5 Final check battery (exact commands, real observed output)
+
+| Check | Result |
+|---|---|
+| `.venv\Scripts\python.exe -m pytest` | `1171 passed in 249.95s (0:04:09)`, exit 0 |
+| `.venv\Scripts\python.exe -m ruff check .` | `All checks passed!`, exit 0 |
+| `.venv\Scripts\python.exe -m mypy` | `Success: no issues found in 19 source files`, exit 0 |
+| `.venv\Scripts\python.exe -m backend --version` | `0.0.1`, exit 0 |
+| `.venv\Scripts\python.exe -m pytest tests/test_approval_service.py tests/test_review_service.py` | `147 passed in 15.16s`, exit 0 |
+| `.venv\Scripts\python.exe -m pytest tests/test_task_service.py tests/test_authorization.py tests/test_notification_events.py` | `61 passed in 5.65s`, exit 0 |
+| `git diff --check` | exit 0 (no whitespace errors) |
+| `git status --short` | empty; nothing staged, no new migration |
+
+### 15.6 Read-only audit (no edits) — findings and citations
+
+| Audit question | Evidence |
+|---|---|
+| Does `approvals.py` read source content? | `Select-String -Path backend/approvals.py -Pattern 'content\|bucket\|raw_metadata'` returned only the docstring line 77 ("Deliberately excludes source message content, bucket data and raw metadata"). No `source_message`/bucket column is selected or returned. |
+| Is `approval_state` updated in exactly one place? | `Get-ChildItem backend -Recurse -Filter *.py \| Select-String 'UPDATE task SET approval_state'` returned one hit: `backend/approvals.py:472`. |
+| Is `approval_recipient` used only for authorization/listing? | Four hits: docstring line 11, the `REASON_NOT_APPROVAL_RECIPIENT` constant, the `_is_recipient` query at line 175, and its use in `_denial_reason` line 207. `list_pending_approvals` filters through `_denial_reason`; no visibility query is built from it. |
+| Is the decision insert confined to `approvals.py`? | `Get-ChildItem backend -Recurse -Filter *.py \| Select-String 'INSERT INTO approval_decision'` returned one hit: `backend/approvals.py:467`. |
+| Anything staged? | `git status --short` empty. |
+
+The execute prompt's literal `Select-String -Path backend` form fails on PowerShell (a
+directory is rejected as an unreadable file); the equivalent recursive
+`Get-ChildItem ... | Select-String` form was used. No code impact.
+
+### 15.7 Deviations (with requirement IDs)
+
+1. **FR-XV-05 message delivery** — the `notification` table has no free-text column, so the
+   decision message is retained verbatim in `approval_decision.decision_message` and copied
+   into `task_history.reason`; the requester's `CROSS_VERTICAL_DECISION` row points at the
+   request. Notification wording/format stays Phase 11, as plan §10.4 already stated. No
+   schema change and no requirement relaxation.
+2. **FR-XV-06 Admin vertical** — an Admin outside the responsible vertical has no membership
+   there, so `actor_vertical_id` is NULL while `actor_role='Admin'`; this is the truthful
+   record per plan §10.5 and is pinned by
+   `test_admin_outside_responsible_vertical_records_null_vertical`.
+3. **FR-XV-02/AC-14** — a Head's cross-vertical task still has no `approval_request` and no
+   request-history row; pinned by `test_head_cross_vertical_accept_has_no_request_history`.
+4. **Audit command form** — recursive `Get-ChildItem | Select-String` instead of the
+   prompt's directory form (PowerShell limitation, §15.6). No requirement ID affected.
+
+No other deviation from plan §§2–7; no new migration, no new dependency, no SRS edit.
+
+### 15.8 Known gaps and next step
+
+- Notification payload wording/format remains Phase 11 (FR-NOT-01/05).
+- HTTP/UI surfaces remain Phase 12 / out of repo; this phase exposes the service layer only.
+- All eight mutations were killed; no surviving mutant is known.
+- Next: commit the green Phase 8 tree, then start Phase 9 (PB-1/PB-2/PB-7) with
+  `docs/prompts/PHASE9_EXECUTE.md`. Phase 9 was **not** started in this session.
