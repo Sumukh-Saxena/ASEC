@@ -28,6 +28,7 @@ from backend.bucketing import (
     AssignmentResult,
     BucketParams,
     BucketParamsError,
+    SkippedMessage,
     SkipReason,
     assign_messages,
     load_bucket_params,
@@ -83,16 +84,18 @@ def _message(
     group_id: int = 1,
     flag_late: int = 0,
     content: str | None = "content",
+    received_at: str = "recv",
 ) -> None:
     connection.execute(
         "INSERT INTO source_message (id, source, source_message_id, group_id,"
         " event_timestamp, received_at, content, flag_late)"
-        " VALUES (?, 'discord', ?, ?, ?, 'recv', ?, ?)",
+        " VALUES (?, 'discord', ?, ?, ?, ?, ?, ?)",
         (
             message_id,
             f"m-{message_id}",
             group_id,
             None if event_seconds is None else _iso(event_seconds),
+            received_at,
             content,
             flag_late,
         ),
@@ -149,6 +152,24 @@ def _flag_late(connection: sqlite3.Connection, message_id: int) -> int:
     ).fetchone()
     assert row is not None
     return int(row["flag_late"])
+
+
+def _time_basis(connection: sqlite3.Connection, message_id: int) -> str | None:
+    row = connection.execute(
+        "SELECT time_basis FROM source_message WHERE id = ?", (message_id,)
+    ).fetchone()
+    assert row is not None
+    value = row["time_basis"]
+    return None if value is None else str(value)
+
+
+def _stored_event(connection: sqlite3.Connection, message_id: int) -> str | None:
+    row = connection.execute(
+        "SELECT event_timestamp FROM source_message WHERE id = ?", (message_id,)
+    ).fetchone()
+    assert row is not None
+    value = row["event_timestamp"]
+    return None if value is None else str(value)
 
 
 def _fk_clean(connection: sqlite3.Connection) -> None:
@@ -302,7 +323,9 @@ def test_srs_101_message_after_closure(
     composition = _composition(conn)
     assert composition == [[0], [5]]
     bucket = _buckets(conn)[1]
-    assert bucket["predecessor_bucket_id"] == 1
+    # PB-7: the closed bucket's end (10) is after t=5, so no closed bucket
+    # qualifies as the one-hop predecessor; the old graph link is gone.
+    assert bucket["predecessor_bucket_id"] is None
     assert _state(conn, 2) == "OPEN"
     _fk_clean(conn)
 
@@ -602,7 +625,11 @@ def test_cross_call_monotone_matches_single_call(conn: sqlite3.Connection) -> No
 # --- predecessors -------------------------------------------------------------
 
 
-def test_predecessor_chain_and_branching(conn: sqlite3.Connection) -> None:
+def test_late_predecessor_is_one_hop_to_the_last_closed_bucket(
+    conn: sqlite3.Connection,
+) -> None:
+    """PB-7: only a late bucket gets a link, and it is one hop to the latest
+    CLOSED bucket whose end is at or before the message time."""
     _group(conn)
     _message(conn, 1, 10)
     _assign(conn)
@@ -614,52 +641,52 @@ def test_predecessor_chain_and_branching(conn: sqlite3.Connection) -> None:
     bucket_a, bucket_b = buckets[0], buckets[1]
     assert [_state(conn, b["id"]) for b in buckets] == ["CLOSED", "CLOSED"]
     assert _pred(conn, bucket_a["id"]) is None
-    assert _pred(conn, bucket_b["id"]) == bucket_a["id"]
-    _message(conn, 3, 25)  # late; predecessor = greatest closed start <= 25
+    assert _pred(conn, bucket_b["id"]) is None  # normal bucket: no link
+    _message(conn, 3, 25)  # late; latest closed end <= 25 is A (end 20)
     result = _assign(conn)
     late25 = result.assigned[0][1]
-    assert _pred(conn, late25) == bucket_b["id"]
-    _message(conn, 4, 14)  # late; predecessor = greatest closed start <= 14
+    assert _pred(conn, late25) == bucket_a["id"]
+    _message(conn, 4, 14)  # late; no closed end <= 14 -> NULL
     result2 = _assign(conn)
     late14 = result2.assigned[0][1]
-    assert _pred(conn, late14) == bucket_a["id"]
-    # Branching: two late buckets hang off different closed parents; every
-    # predecessor id is smaller than the child id.
+    assert _pred(conn, late14) is None
+    # Every recorded link is one hop and points at an earlier bucket.
     assert late14 > late25 > bucket_b["id"] > bucket_a["id"]
     _fk_clean(conn)
 
 
-def test_predecessor_ids_smaller_and_null_only_first(
-    conn: sqlite3.Connection,
-) -> None:
+def test_normal_buckets_have_no_predecessor(conn: sqlite3.Connection) -> None:
+    """PB-7: a bucket that is not late has no link (buckets are not a chain)."""
     _group(conn)
     seconds = [0, 10, 30, 45, 60, 90]
     for mid, s in enumerate(seconds, start=1):
         _message(conn, mid, s)
     _assign(conn)
-    for bucket in _buckets(conn):
-        pred = bucket["predecessor_bucket_id"]
-        first = _buckets(conn)[0]["id"]
-        if bucket["id"] == first:
-            assert pred is None
-        else:
-            assert pred is not None
-            assert pred < bucket["id"]
+    assert [bucket["predecessor_bucket_id"] for bucket in _buckets(conn)] == [
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ]
     _fk_clean(conn)
 
 
-def test_recovery_fallback_predecessor(conn: sqlite3.Connection) -> None:
+def test_late_message_before_every_closed_end_links_null(
+    conn: sqlite3.Connection,
+) -> None:
     _group(conn)
     _message(conn, 1, 10)
     _assign(conn)
     mark_stream_progress(conn, group_id=1, event_progress=_iso(23))
-    _message(conn, 2, 5)  # earlier than every closed start -> recovery fallback
+    _message(conn, 2, 5)  # earlier than every closed end -> no link
     result = _assign(conn)
     late_bucket = result.assigned[0][1]
     assert result.late_message_ids == (2,)
-    # Recovery-link fallback, not an event-time predecessor (pending
-    # amendment P3): least closed start, breaking ties by least id.
-    assert _pred(conn, late_bucket) == 1
+    # PB-7 removed the recovery fallback chain: no qualified closed bucket
+    # means NULL, never a multi-hop substitute.
+    assert _pred(conn, late_bucket) is None
     assert late_bucket > 1
     _fk_clean(conn)
 
@@ -802,6 +829,92 @@ def test_skipped_message_source_untouched(conn: sqlite3.Connection) -> None:
     ).fetchone()
     assert row["content"] == "keep me"
     assert row["flag_late"] == 0
+
+
+# --- PB-2 effective time basis (FR-ING-02, FR-BKT-01, 0019) -------------------
+
+
+def test_event_time_records_event_basis(conn: sqlite3.Connection) -> None:
+    """A usable event time is the bucket time and is recorded, never rewritten."""
+    _group(conn)
+    _message(conn, 1, 12)
+    result = _assign(conn)
+    assert result.skipped == ()
+    assert [message_id for message_id, _ in result.assigned] == [1]
+    assert _time_basis(conn, 1) == "EVENT"
+    assert _stored_event(conn, 1) == _iso(12)
+    assert _buckets(conn)[0]["start_event_timestamp"] == _iso(12)
+
+
+@pytest.mark.parametrize(
+    "stored_event",
+    [
+        None,  # missing event time
+        "nonsense",  # malformed event time
+        "2026-01-01T00:00:09",  # timezone-naive event time
+    ],
+)
+def test_unusable_event_time_uses_receipt_time(
+    conn: sqlite3.Connection, stored_event: str | None
+) -> None:
+    """PB-2: receipt fallback places the message, marks RECEIPT and reports it.
+
+    The stored event timestamp is preserved exactly as supplied (FR-ING-02,
+    DR-03) and the message is not silently skipped (FR-BKT-01).
+    """
+    _group(conn)
+    _message(conn, 1, 0, received_at=_iso(7))
+    conn.execute(
+        "UPDATE source_message SET event_timestamp = ? WHERE id = 1", (stored_event,)
+    )
+    result = _assign(conn)
+    assert [message_id for message_id, _ in result.assigned] == [1]
+    assert _time_basis(conn, 1) == "RECEIPT"
+    assert _stored_event(conn, 1) == stored_event
+    assert result.skipped == (
+        SkippedMessage(message_id=1, reason=SkipReason.EVENT_TIME_UNUSABLE),
+    )
+    assert _buckets(conn)[0]["start_event_timestamp"] == _iso(7)
+
+
+def test_unusable_event_and_receipt_stays_unassigned(
+    conn: sqlite3.Connection,
+) -> None:
+    """A message with neither usable time is skipped, visible and unassigned."""
+    _group(conn)
+    _message(conn, 1, None, received_at="not-a-time")
+    result = _assign(conn)
+    assert result.assigned == ()
+    assert result.skipped == (
+        SkippedMessage(message_id=1, reason=SkipReason.MISSING_EVENT_TIME),
+    )
+    assert _time_basis(conn, 1) is None
+
+
+def test_receipt_fallback_orders_by_effective_time(
+    conn: sqlite3.Connection,
+) -> None:
+    """FR-BKT-03 is applied to the selected effective time, not the raw column."""
+    _group(conn)
+    _message(conn, 1, 12)  # EVENT time 12
+    _message(conn, 2, None, received_at=_iso(0))  # RECEIPT time 0
+    _assign(conn)
+    starts = [bucket["start_event_timestamp"] for bucket in _buckets(conn)]
+    assert starts == [_iso(0), _iso(12)]
+    assert _members(conn, _buckets(conn)[0]["id"]) == [2]
+    assert _members(conn, _buckets(conn)[1]["id"]) == [1]
+
+
+def test_unusable_receipt_does_not_affect_a_usable_event(
+    conn: sqlite3.Connection,
+) -> None:
+    """The receipt column is only consulted when the event time is unusable."""
+    _group(conn)
+    _message(conn, 1, 3, received_at="not-a-time")
+    result = _assign(conn)
+    assert result.skipped == ()
+    assert _time_basis(conn, 1) == "EVENT"
+    assert _buckets(conn)[0]["start_event_timestamp"] == _iso(3)
 
 
 # --- concurrency and rollback --------------------------------------------------

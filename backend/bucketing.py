@@ -1,38 +1,47 @@
 """Bucket-formation service for ASEC (Phase 2 — bucket formation; SRS §3.2).
 
 Implements FR-BKT-01..08, FR-BKT-10 and FR-BKT-12 over the committed schema
-(0002 source messages, 0003 buckets) plus this slice's durable progress table
-(0010 source_group_progress).
+(0002 source messages, 0003 buckets), the durable progress table (0010
+source_group_progress) and the PB-2 time-basis column (0019).
 
-Binding semantics (engineering lead, approved Revision 4):
+Binding semantics (engineering lead, approved Revision 4; Phase 9 PB-1/2/7):
 
 - Assignment never closes an existing bucket and never advances progress.
-  Closure happens only in :func:`mark_stream_progress`, and only when
-  ``e + C <= accepted progress`` (inclusive, ``e = min(s + M, max(s + W,
-  l + G))`` per FR-BKT-05). A late bucket is born CLOSED iff its own
-  ``e + C`` is at or behind the accepted progress, otherwise OPEN.
-- A message is late iff its event time ``t`` is at or behind the group's
-  accepted progress (``t <= P``), or it precedes the current OPEN bucket's
-  start when one exists (``t < current.start``). Every late message creates
-  its own bucket; it never joins a bucket created before it in event time.
+  Closure happens only in :func:`mark_stream_progress` (legacy event-time
+  progress) or :func:`backend.clock.advance_group_clock` (PB-1 per-group
+  clock), and only when ``e + C <= boundary`` (inclusive, ``e = min(s + M,
+  max(s + W, l + G))`` per FR-BKT-05). A late bucket is born CLOSED iff its
+  own ``e + C`` is at or behind the boundary, otherwise OPEN.
+- Settle-then-assign (PB-1): when the group has a clock row, only messages
+  with ``t + C <= clock`` are assigned; the rest stay unassigned for the next
+  tick. Without a clock row the pre-clock contract applies unchanged (direct
+  service callers and databases that never started a clock).
+- Late under the clock: the message would have joined a bucket that is
+  already CLOSED (FR-BKT-08), or it precedes the current OPEN bucket's start
+  (``t < current.start``). Every late message creates its own bucket; it
+  never joins or mutates a bucket created before it. In the legacy no-clock
+  path a message is late when ``t <= progress`` or ``t < current.start``.
 - The current OPEN bucket per message is the OPEN bucket with the greatest
   ``(start_event_timestamp, id)``; FR-BKT-04 (``t - s < M and (t - s < W or
   t - l < G)``, all strict) is evaluated only against it, and a same-start
   late bucket wins by id and becomes current while OPEN.
-- Predecessor links form a cycle-free graph, not one linear chain: for a new
-  bucket the CLOSED bucket with the greatest start ``<= t`` (ties: greatest
-  id), else the CLOSED bucket with the least start (recovery-link fallback,
-  ties: least id), else the current OPEN bucket, else NULL. Predecessor ids
-  are always smaller than the new bucket id; links are never rewritten.
+- Predecessor links (PB-7): only a late bucket gets one, and it is one hop to
+  the latest CLOSED bucket whose end is at or before ``t`` (ties: greatest
+  id), else NULL. A bucket that is not late has NULL. There is no fallback
+  chain and no multi-hop graph; buckets are processing boundaries, not
+  conversations (BR-05, FR-BKT-09/10).
 - Order independence: within one call, composition depends only on the set
-  of assigned messages (sorted by ``(event time, source message id)``).
-  Across calls, composition depends on the order of calls: a message whose
-  event time precedes an already-built bucket's start, or the accepted
-  progress, is assigned as a late message (FR-BKT-08). This limitation is
-  the subject of pending SRS amendment P5 and must not be claimed away.
+  of settled messages (sorted by ``(event time, source message id)``). The
+  clock's settle window means messages arriving within ``C`` of each other are
+  all present before any of them is assigned (FR-BKT-06); a message that
+  arrives later than that window is late by FR-BKT-08.
 - Invalid timestamps (missing, malformed, timezone-naive) never block the
-  group: the message stays stored and unassigned and is reported as skipped;
-  event times are never replaced with receipt time.
+  group: PB-2 selects ``received_at`` when the event time is unusable, records
+  ``time_basis='RECEIPT'`` and reports ``EVENT_TIME_UNUSABLE`` in the skip
+  report while still placing the message (FR-BKT-01). The stored
+  ``event_timestamp`` is never overwritten; event times are never replaced
+  with receipt time. A message whose receipt time is also unusable stays
+  stored and unassigned and is reported as skipped.
 
 Timestamps are parsed with :meth:`datetime.fromisoformat` after ``Z`` to
 ``+00:00`` normalization and compared as timezone-aware UTC values. Bucket
@@ -143,6 +152,7 @@ class SkipReason(enum.Enum):
     MISSING_EVENT_TIME = "missing"
     MALFORMED_EVENT_TIME = "malformed"
     NAIVE_EVENT_TIME = "naive"
+    EVENT_TIME_UNUSABLE = "event-time-unusable"
 
 
 @dataclass(frozen=True)
@@ -153,6 +163,13 @@ class SkippedMessage:
 
 @dataclass(frozen=True)
 class AssignmentResult:
+    """Outcome of one assignment pass.
+
+    ``skipped`` is the observable PB-2 report. A message with
+    ``EVENT_TIME_UNUSABLE`` is reported *and* placed in a bucket using its
+    receipt time; the other reasons mean the message stayed unassigned.
+    """
+
     assigned: tuple[tuple[int, int], ...] = ()
     late_message_ids: tuple[int, ...] = ()
     born_closed_bucket_ids: tuple[int, ...] = ()
@@ -167,7 +184,7 @@ class ProgressResult:
     closed_bucket_ids: tuple[int, ...] = ()
 
 
-class _TimestampError(Exception):
+class _TimestampError(ValueError):
     """Internal: an event timestamp cannot be used as an event time."""
 
     def __init__(self, reason: SkipReason, detail: str) -> None:
@@ -210,11 +227,25 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _parse_or_skip(value: str | None, message_id: int) -> tuple[datetime, int] | SkippedMessage:
+def _effective_time(
+    event_timestamp: str | None, received_at: str, message_id: int
+) -> tuple[datetime, str, bool] | SkippedMessage:
+    """PB-2 effective time: event time, else receipt time, else a reported skip.
+
+    Returns ``(instant, basis, receipt_fallback)`` where ``basis`` is the value
+    recorded in ``source_message.time_basis``. When the event time is unusable
+    the receipt time is used *without* touching the stored event timestamp; the
+    fallback flag tells the caller to report ``EVENT_TIME_UNUSABLE``. When
+    neither time is usable the message stays unassigned and keeps the original
+    event-time reason.
+    """
     try:
-        return (parse_event_time(value), message_id)
-    except _TimestampError as error:
-        return SkippedMessage(message_id=message_id, reason=error.reason)
+        return parse_event_time(event_timestamp), "EVENT", False
+    except _TimestampError as event_error:
+        try:
+            return parse_event_time(received_at), "RECEIPT", True
+        except _TimestampError:
+            return SkippedMessage(message_id=message_id, reason=event_error.reason)
 
 
 def _group_ids(connection: sqlite3.Connection, group_id: int | None) -> list[int]:
@@ -226,15 +257,23 @@ def _group_ids(connection: sqlite3.Connection, group_id: int | None) -> list[int
 
 def _unassigned_messages(
     connection: sqlite3.Connection, group_id: int
-) -> list[tuple[int, str | None, str]]:
+) -> list[tuple[int, str | None, str, str]]:
     rows = connection.execute(
-        "SELECT m.id, m.event_timestamp, m.source_message_id"
+        "SELECT m.id, m.event_timestamp, m.received_at, m.source_message_id"
         " FROM source_message m"
         " LEFT JOIN bucket_message bm ON bm.message_id = m.id"
         " WHERE m.group_id = ? AND bm.message_id IS NULL",
         (group_id,),
     ).fetchall()
-    return [(int(row["id"]), row["event_timestamp"], str(row["source_message_id"])) for row in rows]
+    return [
+        (
+            int(row["id"]),
+            row["event_timestamp"],
+            str(row["received_at"]),
+            str(row["source_message_id"]),
+        )
+        for row in rows
+    ]
 
 
 def _read_progress(
@@ -266,16 +305,28 @@ def _current_open(
 def _last_member_time(
     connection: sqlite3.Connection, bucket_id: int, start: datetime
 ) -> datetime:
-    """l for FR-BKT-04: the group's latest member instant (>= start)."""
+    """l for FR-BKT-04: the group's latest member instant (>= start).
+
+    Members are read through the PB-2 effective time (event, else receipt)
+    because a placed member's raw ``event_timestamp`` may be unusable while
+    its receipt time placed it; the stored event timestamp is not rewritten.
+    """
     rows = connection.execute(
-        "SELECT m.event_timestamp FROM bucket_message bm"
+        "SELECT m.id, m.event_timestamp, m.received_at FROM bucket_message bm"
         " JOIN source_message m ON m.id = bm.message_id"
         " WHERE bm.bucket_id = ?",
         (bucket_id,),
     ).fetchall()
     latest = start
     for row in rows:
-        member = parse_event_time(row["event_timestamp"])
+        outcome = _effective_time(
+            row["event_timestamp"], str(row["received_at"]), int(row["id"])
+        )
+        if isinstance(outcome, SkippedMessage):
+            # Assignment only places messages with a usable effective time;
+            # never guess a member time here.
+            continue
+        member = outcome[0]
         if member > latest:
             latest = member
     return latest
@@ -337,36 +388,73 @@ def _joins(
     )
 
 
-def _closed_starts(
+def _closed_ends(
     connection: sqlite3.Connection, group_id: int
 ) -> list[tuple[datetime, int]]:
+    rows = connection.execute(
+        "SELECT id, end_event_timestamp FROM bucket"
+        " WHERE group_id = ? AND processing_state = 'CLOSED'"
+        " AND end_event_timestamp IS NOT NULL",
+        (group_id,),
+    ).fetchall()
+    return [
+        (parse_event_time(str(row["end_event_timestamp"])), int(row["id"]))
+        for row in rows
+    ]
+
+
+def _late_predecessor(
+    connection: sqlite3.Connection, group_id: int, event: datetime
+) -> int | None:
+    """PB-7: one hop to the latest CLOSED bucket whose end is at or before ``t``.
+
+    No fallback chain and no link for a non-late bucket: buckets are processing
+    boundaries, not conversations (BR-05, FR-BKT-09/10).
+    """
+    qualified = [pair for pair in _closed_ends(connection, group_id) if pair[0] <= event]
+    if not qualified:
+        return None
+    return max(qualified)[1]
+
+
+def _joins_a_closed_bucket(
+    connection: sqlite3.Connection,
+    group_id: int,
+    event: datetime,
+    params: BucketParams,
+) -> bool:
+    """True when the message would have joined a bucket that is already CLOSED.
+
+    PB-1's late rule: the message is late only if the bucket it would have
+    joined has already closed (closure is recorded on the bucket itself). The
+    closed bucket's own membership is historical and never rewritten.
+    """
     rows = connection.execute(
         "SELECT id, start_event_timestamp FROM bucket"
         " WHERE group_id = ? AND processing_state = 'CLOSED'",
         (group_id,),
     ).fetchall()
-    return [(parse_event_time(str(row["start_event_timestamp"])), int(row["id"])) for row in rows]
+    for row in rows:
+        bucket_id = int(row["id"])
+        start = parse_event_time(str(row["start_event_timestamp"]))
+        if start > event:
+            continue
+        last = _last_member_time(connection, bucket_id, start)
+        if _joins(event, start, last, params):
+            return True
+    return False
 
 
-def _predecessor(
-    connection: sqlite3.Connection,
-    group_id: int,
-    event: datetime,
-    current_open: tuple[int, datetime] | None,
-) -> int | None:
-    """Cycle-free predecessor graph rule (see module docstring)."""
-    closed = _closed_starts(connection, group_id)
-    at_or_before = [pair for pair in closed if pair[0] <= event]
-    if at_or_before:
-        # Greatest start <= t; equal starts break to the greatest bucket id.
-        return max(at_or_before, key=lambda pair: (pair[0], pair[1]))[1]
-    if closed:
-        # Recovery-link fallback: least start (ties: least id). Not an
-        # event-time predecessor; documented in pending SRS amendment P3.
-        return min(closed)[1]
-    if current_open is not None:
-        return current_open[0]
-    return None
+def _clock_boundary(
+    connection: sqlite3.Connection, group_id: int
+) -> datetime | None:
+    """The group's durable clock boundary, or None before the first advance."""
+    row = connection.execute(
+        "SELECT clock_at FROM source_group_clock WHERE group_id = ?", (group_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return parse_event_time(str(row["clock_at"]))
 
 
 def _create_bucket(
@@ -405,6 +493,16 @@ def _add_membership(
     )
 
 
+def _place(
+    connection: sqlite3.Connection, bucket_id: int, message_id: int, basis: str
+) -> None:
+    """Record membership and the PB-2 basis of the time that placed it."""
+    _add_membership(connection, bucket_id, message_id)
+    connection.execute(
+        "UPDATE source_message SET time_basis = ? WHERE id = ?", (basis, message_id)
+    )
+
+
 def _mark_late(connection: sqlite3.Connection, message_id: int) -> None:
     connection.execute(
         "UPDATE source_message SET flag_late = 1 WHERE id = ? AND flag_late = 0",
@@ -413,50 +511,86 @@ def _mark_late(connection: sqlite3.Connection, message_id: int) -> None:
 
 
 def _split_batch(
-    connection: sqlite3.Connection, group_id: int
-) -> tuple[list[tuple[datetime, int]], tuple[SkippedMessage, ...]]:
-    valid: list[tuple[datetime, int, str]] = []
+    connection: sqlite3.Connection,
+    group_id: int,
+    clock: datetime | None,
+    params: BucketParams,
+) -> tuple[list[tuple[datetime, int, str]], tuple[SkippedMessage, ...]]:
+    """Select each unassigned message's effective time (PB-2, FR-BKT-03).
+
+    The returned sequence is ordered by ``(effective time, source message ID)``
+    and carries the basis to record. ``skipped`` is the observable report:
+    ``EVENT_TIME_UNUSABLE`` entries were still placed via receipt time; the
+    other reasons were left unassigned.
+
+    PB-1: when a clock row exists, only messages with ``t + C <= clock`` are
+    considered; the rest stay unassigned for the next tick and are not errors.
+    Without a clock row the pre-clock assignment contract applies (documented
+    in :func:`assign_messages`).
+    """
+    valid: list[tuple[datetime, int, str, str]] = []
     skipped: list[SkippedMessage] = []
-    for message_id, event_timestamp, source_message_id in _unassigned_messages(
+    grace = timedelta(seconds=params.close_grace_c)
+    for message_id, event_timestamp, received_at, source_message_id in _unassigned_messages(
         connection, group_id
     ):
-        outcome = _parse_or_skip(event_timestamp, message_id)
+        outcome = _effective_time(event_timestamp, received_at, message_id)
         if isinstance(outcome, SkippedMessage):
             skipped.append(outcome)
-        else:
-            valid.append((outcome[0], message_id, source_message_id))
+            continue
+        effective, basis, receipt_fallback = outcome
+        if clock is not None and effective + grace > clock:
+            continue
+        if receipt_fallback:
+            skipped.append(
+                SkippedMessage(
+                    message_id=message_id, reason=SkipReason.EVENT_TIME_UNUSABLE
+                )
+            )
+        valid.append((effective, message_id, source_message_id, basis))
     # FR-BKT-03: order by (event timestamp, source message ID). This single
     # sort is the composition decision; re-sorting by internal id would
     # silently override the source-message tie-break.
     valid.sort(key=lambda item: (item[0], item[2]))
-    ordered = [(event, message_id) for event, message_id, _ in valid]
+    ordered = [(effective, message_id, basis) for effective, message_id, _, basis in valid]
     return ordered, tuple(skipped)
 
 
 def _assign_group(
     connection: sqlite3.Connection, group_id: int, params: BucketParams
 ) -> tuple[AssignmentResult, bool]:
-    ordered, skipped = _split_batch(connection, group_id)
-    if not ordered:
-        return AssignmentResult(skipped=skipped), False
     assigned: list[tuple[int, int]] = []
     late_ids: list[int] = []
     born_closed: list[int] = []
     with transaction(connection):
-        # progress is read once inside the transaction; assignment never
-        # writes it (FR-BKT-04 late rule, FR-BKT-05 closure via progress only)
+        # The clock and the legacy progress watermark are read once inside the
+        # transaction; assignment never writes either (FR-BKT-04/05, PB-1).
+        clock = _clock_boundary(connection, group_id)
         progress = _read_progress(connection, group_id)
-        for event, message_id in ordered:
+        ordered, skipped = _split_batch(connection, group_id, clock, params)
+        if not ordered:
+            return AssignmentResult(skipped=skipped), False
+        for event, message_id, basis in ordered:
             current = _current_open(connection, group_id)
-            late = (progress is not None and event <= progress) or (
-                current is not None and event < current[1]
-            )
+            if clock is not None:
+                # PB-1 late rule: only a bucket that has already closed makes
+                # the message late; the receipt-time progress boundary is not
+                # an event-time watermark and is never used as one.
+                late = current is not None and event < current[1]
+                if not late and current is None:
+                    late = _joins_a_closed_bucket(connection, group_id, event, params)
+            else:
+                late = (progress is not None and event <= progress) or (
+                    current is not None and event < current[1]
+                )
             if late:
                 end = _computed_end(event, event, params)
-                born = progress is not None and end + timedelta(
-                    seconds=params.close_grace_c
-                ) <= progress
-                predecessor = _predecessor(connection, group_id, event, current)
+                grace = timedelta(seconds=params.close_grace_c)
+                if clock is not None:
+                    born = end + grace <= clock
+                else:
+                    born = progress is not None and end + grace <= progress
+                predecessor = _late_predecessor(connection, group_id, event)
                 bucket_id = _create_bucket(
                     connection,
                     group_id=group_id,
@@ -466,7 +600,7 @@ def _assign_group(
                     predecessor=predecessor,
                     params=params,
                 )
-                _add_membership(connection, bucket_id, message_id)
+                _place(connection, bucket_id, message_id, basis)
                 _mark_late(connection, message_id)
                 late_ids.append(message_id)
                 if born:
@@ -474,36 +608,34 @@ def _assign_group(
                 assigned.append((message_id, bucket_id))
                 continue
             if current is None:
-                predecessor = _predecessor(connection, group_id, event, None)
                 bucket_id = _create_bucket(
                     connection,
                     group_id=group_id,
                     start=event,
                     end=None,
                     state="OPEN",
-                    predecessor=predecessor,
+                    predecessor=None,
                     params=params,
                 )
-                _add_membership(connection, bucket_id, message_id)
+                _place(connection, bucket_id, message_id, basis)
                 assigned.append((message_id, bucket_id))
                 continue
             bucket_id, start = current
             last = _last_member_time(connection, bucket_id, start)
             if _joins(event, start, last, params):
-                _add_membership(connection, bucket_id, message_id)
+                _place(connection, bucket_id, message_id, basis)
                 assigned.append((message_id, bucket_id))
             else:
-                predecessor = _predecessor(connection, group_id, event, current)
                 successor_id = _create_bucket(
                     connection,
                     group_id=group_id,
                     start=event,
                     end=None,
                     state="OPEN",
-                    predecessor=predecessor,
+                    predecessor=None,
                     params=params,
                 )
-                _add_membership(connection, successor_id, message_id)
+                _place(connection, successor_id, message_id, basis)
                 assigned.append((message_id, successor_id))
     return (
         AssignmentResult(
@@ -525,9 +657,15 @@ def assign_messages(
     """Assign each group's unassigned messages deterministically (FR-BKT-01..04).
 
     Messages are ordered by ``(event time, source message id)`` per FR-BKT-03.
-    No bucket is closed here and progress is never written. Invalid event
-    timestamps are isolated: their messages stay stored and unassigned and are
-    reported in ``skipped``.
+    No bucket is closed here and progress is never written. When the group has
+    a clock row (PB-1), only settled messages (``t + C <= clock``) are
+    considered; unsettled messages stay unassigned for the next tick. A group
+    with no clock row keeps the pre-clock contract (assign every unassigned
+    message) for direct callers and pre-clock databases; the live pipeline
+    always advances the clock before assigning. A message whose event time is
+    unusable is placed using its receipt time (PB-2,
+    ``time_basis='RECEIPT'``) and reported as ``EVENT_TIME_UNUSABLE``; only a
+    message with neither usable time stays stored, unassigned and reported.
     """
     effective = params or BucketParams()
     assigned: list[tuple[int, int]] = []
@@ -546,6 +684,44 @@ def assign_messages(
         born_closed_bucket_ids=tuple(born_closed),
         skipped=tuple(skipped),
     )
+
+
+def close_open_buckets_at_progress(
+    connection: sqlite3.Connection, *, group_id: int, progress: datetime
+) -> tuple[int, ...]:
+    """Close every OPEN bucket whose own ``e + C <= progress`` (FR-BKT-05).
+
+    The bucket's persisted ``parameters_used`` is the sole authority for its
+    end (§4.1), so a parameter change after creation cannot move an existing
+    boundary. Closure order is ``(e, id)`` and the transition is idempotent:
+    only buckets still OPEN are updated. The caller must already hold the
+    group's single write transaction; this function never opens one, because
+    the clock writes the row, the progress boundary and the closures together.
+    """
+    closed: list[int] = []
+    open_rows = connection.execute(
+        "SELECT id, start_event_timestamp, parameters_used FROM bucket"
+        " WHERE group_id = ? AND processing_state = 'OPEN'",
+        (group_id,),
+    ).fetchall()
+    eligible: list[tuple[datetime, int]] = []
+    for row in open_rows:
+        bucket_id = int(row["id"])
+        start = parse_event_time(str(row["start_event_timestamp"]))
+        own_params = _persisted_params(bucket_id, row["parameters_used"])
+        last = _last_member_time(connection, bucket_id, start)
+        end = _computed_end(start, last, own_params)
+        if end + timedelta(seconds=own_params.close_grace_c) <= progress:
+            eligible.append((end, bucket_id))
+    eligible.sort(key=lambda item: (item[0], item[1]))
+    for end, bucket_id in eligible:
+        connection.execute(
+            "UPDATE bucket SET processing_state = 'CLOSED',"
+            " end_event_timestamp = ? WHERE id = ? AND processing_state = 'OPEN'",
+            (_format_event_time(end), bucket_id),
+        )
+        closed.append(bucket_id)
+    return tuple(closed)
 
 
 def mark_stream_progress(
@@ -582,32 +758,12 @@ def mark_stream_progress(
             " updated_at = excluded.updated_at",
             (group_id, _format_event_time(new_progress), _utc_now()),
         )
-        closed: list[int] = []
-        open_rows = connection.execute(
-            "SELECT id, start_event_timestamp, parameters_used FROM bucket"
-            " WHERE group_id = ? AND processing_state = 'OPEN'",
-            (group_id,),
-        ).fetchall()
-        eligible: list[tuple[datetime, int]] = []
-        for row in open_rows:
-            bucket_id = int(row["id"])
-            start = parse_event_time(str(row["start_event_timestamp"]))
-            own_params = _persisted_params(bucket_id, row["parameters_used"])
-            last = _last_member_time(connection, bucket_id, start)
-            end = _computed_end(start, last, own_params)
-            if end + timedelta(seconds=own_params.close_grace_c) <= new_progress:
-                eligible.append((end, bucket_id))
-        eligible.sort(key=lambda item: (item[0], item[1]))
-        for end, bucket_id in eligible:
-            connection.execute(
-                "UPDATE bucket SET processing_state = 'CLOSED',"
-                " end_event_timestamp = ? WHERE id = ? AND processing_state = 'OPEN'",
-                (_format_event_time(end), bucket_id),
-            )
-            closed.append(bucket_id)
+        closed = close_open_buckets_at_progress(
+            connection, group_id=group_id, progress=new_progress
+        )
     return ProgressResult(
         accepted=True,
         regressed=False,
         accepted_progress=_format_event_time(new_progress),
-        closed_bucket_ids=tuple(closed),
+        closed_bucket_ids=closed,
     )

@@ -239,9 +239,17 @@ def test_backlog_includes_groups_with_no_buckets_and_counts_skipped(
     conn: sqlite3.Connection,
 ) -> None:
     """NFR-REL-06: an empty group shows zero backlog, and messages the
-    formation pass must skip (missing event time) stay visible as
-    unassigned backlog — never silent loss."""
-    _ingest(conn, _event("1", "chan-A", None))  # missing event timestamp
+    formation pass must skip stay visible as unassigned backlog — never
+    silent loss.
+
+    PB-2 changes what "skipped" means: a message with an unusable event time
+    but a usable receipt time is now placed. This test therefore keeps the
+    message unplaceable by making both times unusable, so it still asserts the
+    visibility guarantee for a message that cannot be bucketed at all.
+    """
+    _ingest(
+        conn, _event("1", "chan-A", None, received_at="not-a-time")
+    )  # no usable time
     _ingest(conn, _event("2", "chan-B", _iso(0)))  # chan-B: no buckets yet
 
     result = run_bucketing_pass(conn, params=_PARAMSED)
