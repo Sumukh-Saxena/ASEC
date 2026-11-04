@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 _SECRET_MARKERS = (
     "TOKEN",
@@ -76,3 +77,66 @@ def load_config(environ: Mapping[str, str] | None = None) -> Config:
     """Build a :class:`Config` from the given mapping (defaults to ``os.environ``)."""
     source = os.environ if environ is None else environ
     return Config(dict(source))
+
+
+@dataclass(frozen=True)
+class WorkerSettings:
+    """Validated worker-loop timing (O9-3, NFR-MNT-01).
+
+    Defaults are the owner-approved values: a 2 s interval with a 1-60 s
+    exponential backoff after a failed tick. Every value is configuration,
+    never a hard-coded constant at the call site.
+    """
+
+    interval_seconds: float = 2.0
+    backoff_min_seconds: float = 1.0
+    backoff_max_seconds: float = 60.0
+
+
+#: Configuration keys read by :func:`load_worker_settings`.
+WORKER_INTERVAL_KEY = "WORKER_INTERVAL_SECONDS"
+WORKER_BACKOFF_MIN_KEY = "WORKER_BACKOFF_MIN_SECONDS"
+WORKER_BACKOFF_MAX_KEY = "WORKER_BACKOFF_MAX_SECONDS"
+
+
+def load_worker_settings(config: Config) -> WorkerSettings:
+    """Build :class:`WorkerSettings` from optional configuration overrides.
+
+    Absent or blank values keep the O9-3 defaults. A value that is not a
+    positive number, or a maximum backoff below the minimum, raises
+    :class:`ConfigError` before the worker starts — invalid timing is never
+    clamped silently.
+    """
+    defaults = WorkerSettings()
+    interval = _positive_float(
+        config, WORKER_INTERVAL_KEY, defaults.interval_seconds
+    )
+    backoff_min = _positive_float(
+        config, WORKER_BACKOFF_MIN_KEY, defaults.backoff_min_seconds
+    )
+    backoff_max = _positive_float(
+        config, WORKER_BACKOFF_MAX_KEY, defaults.backoff_max_seconds
+    )
+    if backoff_max < backoff_min:
+        raise ConfigError(
+            f"{WORKER_BACKOFF_MAX_KEY} must be at least {WORKER_BACKOFF_MIN_KEY}"
+            f" ({backoff_min}), got {backoff_max}"
+        )
+    return WorkerSettings(
+        interval_seconds=interval,
+        backoff_min_seconds=backoff_min,
+        backoff_max_seconds=backoff_max,
+    )
+
+
+def _positive_float(config: Config, name: str, default: float) -> float:
+    raw = config.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError as error:
+        raise ConfigError(f"{name} must be a number, got {raw!r}") from error
+    if not value > 0:
+        raise ConfigError(f"{name} must be positive, got {raw!r}")
+    return value

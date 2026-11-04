@@ -191,7 +191,7 @@ def migrated(tmp_path: Path) -> Iterator[sqlite3.Connection]:
         (internal_explicit, _CREATED_AT),
     )
 
-    assert apply_migrations(connection) == [16, 17, 18, 19, 20]
+    assert apply_migrations(connection) == [16, 17, 18, 19, 20, 21]
     yield connection
     connection.close()
 
@@ -210,7 +210,7 @@ def test_0017_lands_in_the_window_and_reapply_is_a_noop(
     migrated: sqlite3.Connection,
 ) -> None:
     """PB-3: 0017 applies with 0016/0018 and re-running changes nothing."""
-    assert _versions(migrated) == list(range(1, 21))
+    assert _versions(migrated) == list(range(1, 22))
     assert apply_migrations(migrated) == []
 
 

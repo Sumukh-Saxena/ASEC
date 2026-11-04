@@ -18,9 +18,12 @@ Binding semantics (engineering lead, approved Revision 4; Phase 9 PB-1/2/7):
   service callers and databases that never started a clock).
 - Late under the clock: the message would have joined a bucket that is
   already CLOSED (FR-BKT-08), or it precedes the current OPEN bucket's start
-  (``t < current.start``). Every late message creates its own bucket; it
-  never joins or mutates a bucket created before it. In the legacy no-clock
-  path a message is late when ``t <= progress`` or ``t < current.start``.
+  (``t < current.start``). FR-BKT-04 is evaluated against the current OPEN
+  bucket first: a message that joins it is not late, and only when it does
+  not is a closed bucket consulted. Every late message creates its own
+  bucket; it never joins or mutates a bucket created before it. In the legacy
+  no-clock path a message is late when ``t <= progress`` or
+  ``t < current.start``.
 - The current OPEN bucket per message is the OPEN bucket with the greatest
   ``(start_event_timestamp, id)``; FR-BKT-04 (``t - s < M and (t - s < W or
   t - l < G)``, all strict) is evaluated only against it, and a same-start
@@ -572,13 +575,28 @@ def _assign_group(
             return AssignmentResult(skipped=skipped), False
         for event, message_id, basis in ordered:
             current = _current_open(connection, group_id)
+            joins_current = False
+            if current is not None and event >= current[1]:
+                joins_current = _joins(
+                    event,
+                    current[1],
+                    _last_member_time(connection, current[0], current[1]),
+                    params,
+                )
             if clock is not None:
-                # PB-1 late rule: only a bucket that has already closed makes
-                # the message late; the receipt-time progress boundary is not
-                # an event-time watermark and is never used as one.
-                late = current is not None and event < current[1]
-                if not late and current is None:
-                    late = _joins_a_closed_bucket(connection, group_id, event, params)
+                # PB-1 late rule (owner clarification 2026-11-03): a message is
+                # late when the bucket it would have joined is already CLOSED.
+                # FR-BKT-04 is evaluated against the current OPEN bucket; when
+                # that bucket rejects the message, a closed bucket that would
+                # have taken it makes the message late. A message preceding the
+                # current OPEN bucket's start is late too (documented deviation
+                # recorded for the Phase 9 implementation record).
+                if current is not None and event < current[1]:
+                    late = True
+                else:
+                    late = not joins_current and _joins_a_closed_bucket(
+                        connection, group_id, event, params
+                    )
             else:
                 late = (progress is not None and event <= progress) or (
                     current is not None and event < current[1]
@@ -621,8 +639,7 @@ def _assign_group(
                 assigned.append((message_id, bucket_id))
                 continue
             bucket_id, start = current
-            last = _last_member_time(connection, bucket_id, start)
-            if _joins(event, start, last, params):
+            if joins_current:
                 _place(connection, bucket_id, message_id, basis)
                 assigned.append((message_id, bucket_id))
             else:

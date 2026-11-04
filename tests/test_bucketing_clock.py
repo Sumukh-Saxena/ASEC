@@ -314,3 +314,37 @@ def test_receipt_time_basis_still_settles_and_links(
         "SELECT time_basis FROM source_message WHERE id = 2"
     ).fetchone()[0]
     assert basis == "RECEIPT"
+
+
+def test_message_is_late_when_it_would_have_joined_a_closed_bucket(
+    conn: sqlite3.Connection,
+) -> None:
+    """Owner clarification 2026-11-03: closure, not the progress watermark, decides.
+
+    A bucket created with a longer close grace stays OPEN while a later bucket
+    (created under different persisted parameters) is born CLOSED. A message
+    that would have joined the closed bucket is late even though an earlier
+    OPEN bucket still exists; FR-BKT-04 is evaluated against the current OPEN
+    bucket, which rejects it.
+    """
+    _group(conn)
+    _message(conn, 1, 0)
+    advance_group_clock(conn, 1, now=_iso(30), mode="LIVE")
+    assign_messages(conn, group_id=1, params=BucketParams(10, 5, 30, 30))
+    assert _state(conn, 1) == "OPEN"  # e = 10, closes at 40
+
+    _message(conn, 2, 10)
+    assign_messages(conn, group_id=1, params=BucketParams(10, 5, 30, 1))
+    advance_group_clock(conn, 1, now=_iso(30), mode="LIVE")  # closes B at 21
+    assert [_state(conn, bucket["id"]) for bucket in _buckets(conn)] == [
+        "OPEN",
+        "CLOSED",
+    ]
+
+    _message(conn, 3, 11)
+    result = assign_messages(conn, group_id=1, params=BucketParams(10, 5, 30, 1))
+
+    assert result.late_message_ids == (3,)
+    late_id = result.assigned[0][1]
+    assert _pred(conn, late_id) is None  # the closed bucket ends after t
+    assert _book(conn)[3] == late_id

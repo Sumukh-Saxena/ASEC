@@ -193,9 +193,9 @@ def test_reapplying_the_migrations_is_idempotent(tmp_path: Path) -> None:
         rows = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        # Phase 7 adds the 0016-0018 schema window; the shared count
-        # expectation bumps 15 -> 18 with it (PB-3/PB-5/PB-6).
-        assert [row["version"] for row in rows] == list(range(1, 21))
+        # Phase 7 added the 0016-0018 schema window and Phase 9 added 0019-0021;
+        # the shared count expectation bumps 15 -> 21 with them (PB-3/PB-5/PB-6).
+        assert [row["version"] for row in rows] == list(range(1, 22))
     finally:
         connection.close()
 
