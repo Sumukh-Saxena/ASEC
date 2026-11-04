@@ -53,12 +53,13 @@ import json
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
 from backend.ai_context import bucket_message_entries
 from backend.bucketing import parse_event_time
+from backend.config import DEFAULT_PROPOSAL_MAX_CANDIDATES_PER_CALL
 from backend.db.connection import transaction
 from backend.masking import mask_pii
 from backend.relevance import (
@@ -98,6 +99,7 @@ __all__ = [
     "proposal_pending_buckets",
     "run_proposal_pass",
     "serialize_proposal_request",
+    "serialize_proposal_request_parts",
 ]
 
 DEFAULT_PROPOSAL_ATTEMPTS_PER_BUCKET = 3
@@ -428,6 +430,25 @@ def _redact_error_text(text: str) -> str:
     return redacted
 
 
+def _proposal_payload(
+    model_req: ProposalGenerationRequest,
+) -> dict[str, object]:
+    """The model-facing request payload (no handle map, C1/DC-12)."""
+    return {
+        "bucket_id": model_req.bucket_id,
+        "vertical_name": model_req.vertical_name,
+        "instructions": model_req.instructions,
+        "candidate_messages": [
+            _serialized_message(message)
+            for message in model_req.candidate_messages
+        ],
+        "context_messages": [
+            _serialized_message(message)
+            for message in model_req.context_messages
+        ],
+    }
+
+
 def serialize_proposal_request(
     request: ProposalGenerationRequest | ProposalRequestContext,
     *,
@@ -451,19 +472,7 @@ def serialize_proposal_request(
         model_req = request
         hmap = handle_map if include_handle_map else None
 
-    payload: dict[str, object] = {
-        "bucket_id": model_req.bucket_id,
-        "vertical_name": model_req.vertical_name,
-        "instructions": model_req.instructions,
-        "candidate_messages": [
-            _serialized_message(message)
-            for message in model_req.candidate_messages
-        ],
-        "context_messages": [
-            _serialized_message(message)
-            for message in model_req.context_messages
-        ],
-    }
+    payload = _proposal_payload(model_req)
     if include_handle_map:
         if hmap is not None:
             if isinstance(hmap, Mapping):
@@ -472,6 +481,45 @@ def serialize_proposal_request(
                 payload["mention_handle_map"] = dict(sorted(hmap))
         else:
             payload["mention_handle_map"] = {}
+    return json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+
+
+def serialize_proposal_request_parts(
+    requests: Sequence[ProposalGenerationRequest | ProposalRequestContext],
+    *,
+    include_handle_map: bool = False,
+    handle_map: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
+) -> str:
+    """Canonical JSON artifact of every request part of one attempt (FR-BKT-11).
+
+    Plan §4.8: the 0014 artifact stores a JSON object with a ``parts`` array
+    instead of one request. Every part carries the model-facing dispatch
+    payload; the bucket-wide ``mention_handle_map`` is stored once at the top
+    level (the handle numbering is bucket-wide and identical for every part),
+    which keeps the backend-only reconstruction data available without
+    duplicating it per part.
+    """
+    if not requests:
+        raise ValueError("serialize_proposal_request_parts needs at least one part")
+    payloads: list[dict[str, object]] = []
+    context_map: tuple[tuple[str, str], ...] = ()
+    for item in requests:
+        if isinstance(item, ProposalRequestContext):
+            model_req = item.request
+            if not context_map:
+                context_map = item.mention_handle_map
+        else:
+            model_req = item
+        payloads.append(_proposal_payload(model_req))
+    payload: dict[str, object] = {"parts": payloads}
+    if include_handle_map:
+        selected = handle_map if handle_map is not None else context_map
+        if isinstance(selected, Mapping):
+            payload["mention_handle_map"] = dict(sorted(selected.items()))
+        else:
+            payload["mention_handle_map"] = dict(sorted(selected))
     return json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
@@ -750,6 +798,45 @@ def _proposal_request(
     return ProposalRequestContext(
         request=req,
         mention_handle_map=tuple(sorted(handle_map.items())),
+    )
+
+
+def _proposal_requests(
+    connection: sqlite3.Connection,
+    bucket_id: int,
+    policy: ProposalPolicy | None,
+    max_candidates_per_call: int,
+) -> tuple[ProposalRequestContext, ...]:
+    """Split the candidate set into contiguous parts (FR-BKT-11, plan §4.8).
+
+    Every part receives the whole bucket context (so the model still sees the
+    conversation) and only its own candidates. Candidates are ordered by
+    ascending message id, so the partition is deterministic and a candidate
+    appears in exactly one part. An empty candidate set still yields one part
+    with no candidates (the zero-proposal attempt shape).
+    """
+    whole = _proposal_request(connection, bucket_id, policy)
+    chunks = _partition_candidates(
+        whole.request.candidate_messages, max_candidates_per_call
+    )
+    return tuple(
+        ProposalRequestContext(
+            request=replace(whole.request, candidate_messages=chunk),
+            mention_handle_map=whole.mention_handle_map,
+        )
+        for chunk in chunks
+    )
+
+
+def _partition_candidates(
+    candidates: Sequence[ProposalMessage], size: int
+) -> tuple[tuple[ProposalMessage, ...], ...]:
+    """Contiguous candidate parts of at most ``size``, order preserved."""
+    if not candidates:
+        return ((),)
+    return tuple(
+        tuple(candidates[start : start + size])
+        for start in range(0, len(candidates), size)
     )
 
 
@@ -1093,6 +1180,17 @@ def _raw_response_text(response: object) -> str:
     return repr(response)
 
 
+def _process_raw_text(raw: str) -> tuple[str, str, int]:
+    """C2/DC-20 retention of one evidence text: mask, hash, bound."""
+    masked = mask_pii(raw)
+    full_sha = _hash_text(masked)
+    raw_bytes = masked.encode("utf-8")
+    if len(raw_bytes) > MAX_RAW_RESPONSE_BYTES:
+        truncated = raw_bytes[:MAX_RAW_RESPONSE_BYTES].decode("utf-8", errors="ignore")
+        return truncated, full_sha, 1
+    return masked, full_sha, 0
+
+
 def _process_raw_response(response: object) -> tuple[str, str, int]:
     """C2/DC-20 retention: adapter output masked, hashed, and bounded.
 
@@ -1104,14 +1202,34 @@ def _process_raw_response(response: object) -> tuple[str, str, int]:
        otherwise 0.
     Returns (stored_text, full_response_sha256, raw_response_truncated).
     """
-    raw = _raw_response_text(response)
-    masked = mask_pii(raw)
-    full_sha = _hash_text(masked)
-    raw_bytes = masked.encode("utf-8")
-    if len(raw_bytes) > MAX_RAW_RESPONSE_BYTES:
-        truncated = raw_bytes[:MAX_RAW_RESPONSE_BYTES].decode("utf-8", errors="ignore")
-        return truncated, full_sha, 1
-    return masked, full_sha, 0
+    return _process_raw_text(_raw_response_text(response))
+
+
+def _combined_raw_response_text(responses: Sequence[object]) -> str:
+    """Evidence text for every part's adapter output (FR-BKT-11).
+
+    A single-part attempt keeps exactly the Phase 5 shape (the adapter's
+    output as stored before parts existed). A multi-part attempt stores a
+    ``{"parts": [...]}`` object so no part's output is lost; a part whose
+    evidence text is not JSON is kept verbatim as a string.
+    """
+    if len(responses) == 1:
+        return _raw_response_text(responses[0])
+    parts: list[object] = []
+    for response in responses:
+        text = _raw_response_text(response)
+        try:
+            parts.append(json.loads(text))
+        except (TypeError, ValueError):
+            parts.append(text)
+    return json.dumps(
+        {"parts": parts}, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+
+
+def _process_raw_responses(responses: Sequence[object]) -> tuple[str, str, int]:
+    """C2/DC-20 retention across every executed request part."""
+    return _process_raw_text(_combined_raw_response_text(responses))
 
 
 def _stored_raw_response(response: object) -> str:
@@ -1292,15 +1410,23 @@ class _AttemptInputs:
     vertical_name: str | None
     attempt_count: int
     budget: int
-    context: ProposalRequestContext
+    contexts: tuple[ProposalRequestContext, ...]
+
+    @property
+    def requests(self) -> tuple[ProposalGenerationRequest, ...]:
+        return tuple(context.request for context in self.contexts)
 
     @property
     def request(self) -> ProposalGenerationRequest:
-        return self.context.request
+        return self.contexts[0].request
 
     @property
     def handle_map(self) -> dict[str, str]:
-        return dict(self.context.mention_handle_map)
+        return dict(self.contexts[0].mention_handle_map)
+
+    @property
+    def mention_handle_map(self) -> tuple[tuple[str, str], ...]:
+        return self.contexts[0].mention_handle_map
 
 
 def _attempt_inputs(
@@ -1309,8 +1435,9 @@ def _attempt_inputs(
     *,
     budget: int,
     policy: ProposalPolicy,
+    max_candidates_per_call: int,
 ) -> _AttemptInputs:
-    """Compose the request and read the pre-call state (one read pass)."""
+    """Compose the request parts and read the pre-call state (one read pass)."""
     _bucket_id, group_id, vertical_name = _bucket_group(connection, bucket_id)
     row = connection.execute(
         "SELECT vertical_id, g.vertical_id FROM source_group AS g"
@@ -1322,7 +1449,9 @@ def _attempt_inputs(
             f"bucket {bucket_id} has no vertically mapped source group"
         )
     source_vertical_id = int(row["vertical_id"])
-    context = _proposal_request(connection, bucket_id, policy)
+    contexts = _proposal_requests(
+        connection, bucket_id, policy, max_candidates_per_call
+    )
     return _AttemptInputs(
         bucket_id=bucket_id,
         group_id=group_id,
@@ -1330,7 +1459,7 @@ def _attempt_inputs(
         vertical_name=vertical_name,
         attempt_count=_attempt_count(connection, bucket_id),
         budget=budget,
-        context=context,
+        contexts=contexts,
     )
 
 
@@ -1340,46 +1469,74 @@ def _run_attempt(
     generator: ProposalGenerator,
     *,
     stage: str,
-    mono_start: float,
     started_at: str,
 ) -> _AttemptResult:
-    """One adapter call + one authoritative write transaction (§4.6).
+    """The adapter calls + one authoritative write transaction (§4.6).
 
     Semantics mirror relevance (approved Phase 4 pattern): the adapter
     exception or envelope failure persists a FAILED_RETRYABLE attempt;
     item-level failures (DC-3) likewise persist a failed attempt with the
     evidence; success persists attempts + proposals + latency + the 0014
     artifact in a single transaction, guarded by the authoritative budget
-    re-check and first-writer-wins. An interrupt leaves nothing written.
+    re-check and first-writer-wins. Oversize candidate sets are processed in
+    contiguous parts (FR-BKT-11): every part's response is validated against
+    its own candidates with the whole bucket as context, provenance must agree
+    across parts (one attempt row carries one provenance), and any part
+    failure fails the whole attempt with nothing partial written. An interrupt
+    leaves nothing written.
     """
     bucket_id = inputs.bucket_id
-    response: object | None = None
+    responses: list[object] = []
+    executed: list[ProposalRequestContext] = []
     failure: BaseException | None = None
     provenance: tuple[str, str, str] = ("", "", "")
-    drafts: tuple[ProposalDraft, ...] = ()
-    rejections: tuple[dict[str, object], ...] = ()
-    try:
-        response = generator.generate(inputs.request)
-    except BaseException as error:
-        if isinstance(error, (KeyboardInterrupt, SystemExit)):
-            raise
-        failure = error
-    if failure is None:
+    drafts_list: list[ProposalDraft] = []
+    rejections: list[dict[str, object]] = []
+    call_seconds = 0.0
+    for part_index, context in enumerate(inputs.contexts):
+        executed.append(context)
+        call_started = time.monotonic()
         try:
-            provenance, drafts, rejections = _validated_response(
-                response, inputs.request, inputs.handle_map
+            response = generator.generate(context.request)
+        except BaseException as error:
+            call_seconds += time.monotonic() - call_started
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                raise
+            failure = error
+            break
+        call_seconds += time.monotonic() - call_started
+        responses.append(response)
+        try:
+            part_provenance, part_drafts, part_rejections = _validated_response(
+                response, context.request, dict(context.mention_handle_map)
             )
         except GeneratorContractError as error:
             failure = error
-    if failure is None and not drafts and rejections:
-        # DC-3 (owner-vetoable): a non-empty response whose every item
-        # failed Tier-2 is an execution failure — never a legitimate
-        # zero-proposals success. Evidence still rides the artifact.
-        codes = ", ".join(str(entry["reason_code"]) for entry in rejections)
-        failure = GeneratorContractError(
-            f"every one of {len(rejections)} response items failed"
-            f" structural validation: {codes}"
-        )
+            break
+        if provenance == ("", "", ""):
+            provenance = part_provenance
+        elif part_provenance != provenance:
+            failure = GeneratorContractError(
+                "response provenance differs between request parts:"
+                f" {provenance!r} vs {part_provenance!r}"
+            )
+            break
+        drafts_list.extend(part_drafts)
+        for rejection in part_rejections:
+            rejections.append({"part_index": part_index, **rejection})
+        if not part_drafts and part_rejections:
+            # DC-3 (owner-vetoable): a non-empty response whose every item
+            # failed Tier-2 is an execution failure — never a legitimate
+            # zero-proposals success. Evidence still rides the artifact.
+            codes = ", ".join(
+                str(entry["reason_code"]) for entry in part_rejections
+            )
+            failure = GeneratorContractError(
+                f"every one of {len(part_rejections)} response items of part"
+                f" {part_index} failed structural validation: {codes}"
+            )
+            break
+    drafts = tuple(drafts_list)
     with transaction(connection):
         # Authoritative budget re-check: a concurrent writer may have
         # consumed attempts after the pre-call count (NFR-REL-02).
@@ -1433,9 +1590,6 @@ def _run_attempt(
                 # commits with the proposal in this same transaction (A18
                 # skips invalid rows, which _persist_proposal never writes).
                 notify_proposal_ready(connection, proposal_id)
-            call_seconds = (
-                time.monotonic() - mono_start if mono_start >= 0 else 0.0
-            )
             _record_latency(
                 connection,
                 attempt_id,
@@ -1452,8 +1606,8 @@ def _run_attempt(
                  error_text),
             )
             attempt_id = int(cursor.lastrowid or 0)
-        if response is not None:
-            raw_text, response_sha, raw_truncated = _process_raw_response(response)
+        if responses:
+            raw_text, response_sha, raw_truncated = _process_raw_responses(responses)
         else:
             raw_text, response_sha, raw_truncated = None, None, 0
         connection.execute(
@@ -1466,12 +1620,12 @@ def _run_attempt(
                 attempt_id,
                 MASKING_RULESET_VERSION,
                 PROPOSAL_PROMPT_VERSION,
-                serialize_proposal_request(
-                    inputs.context, include_handle_map=True
+                serialize_proposal_request_parts(
+                    executed, include_handle_map=True, handle_map=inputs.handle_map
                 ),
                 _hash_text(
-                    serialize_proposal_request(
-                        inputs.request, include_handle_map=False
+                    serialize_proposal_request_parts(
+                        executed, include_handle_map=False
                     )
                 ),
                 raw_text,
@@ -1506,6 +1660,7 @@ def _process_bucket(
     *,
     budget: int,
     policy: ProposalPolicy,
+    max_candidates_per_call: int,
 ) -> ProposalBucketOutcome | None:
     """All attempts for one bucket in one pass (primary, then fallback).
 
@@ -1513,8 +1668,16 @@ def _process_bucket(
     contribution (NFR-REL-03 honesty); a competing SUCCEEDED attempt makes
     the pass skip the bucket with no outcome row (``None``); a failed
     attempt reports RETRYING or EXHAUSTED from the post-failure count.
+    ``max_candidates_per_call`` fixes the per-attempt candidate part size for
+    both the primary and the fallback (FR-BKT-11).
     """
-    inputs = _attempt_inputs(connection, bucket_id, budget=budget, policy=policy)
+    inputs = _attempt_inputs(
+        connection,
+        bucket_id,
+        budget=budget,
+        policy=policy,
+        max_candidates_per_call=max_candidates_per_call,
+    )
     if inputs.attempt_count >= budget:
         return ProposalBucketOutcome(
             bucket_id=bucket_id,
@@ -1534,13 +1697,11 @@ def _process_bucket(
             else STAGE_PROPOSAL_FALLBACK_GENERATION
         )
         started_at = _utc_now()
-        mono_start = time.monotonic()
         result = _run_attempt(
             connection,
             inputs,
             generator,
             stage=stage,
-            mono_start=mono_start,
             started_at=started_at,
         )
         if result.attempt_id is None:
@@ -1604,6 +1765,7 @@ def run_proposal_pass(
     max_attempts_per_bucket: int = DEFAULT_PROPOSAL_ATTEMPTS_PER_BUCKET,
     budget_overrides: Mapping[int, int] | None = None,
     policy: ProposalPolicy | None = None,
+    max_candidates_per_call: int = DEFAULT_PROPOSAL_MAX_CANDIDATES_PER_CALL,
 ) -> ProposalPassResult:
     """Run one deterministic proposal pass over pending buckets (FR-PRP-01).
 
@@ -1621,8 +1783,22 @@ def run_proposal_pass(
     reported as successful. Interrupts (``KeyboardInterrupt``/
     ``SystemExit``) propagate unchanged with nothing written for the
     in-flight attempt.
+
+    ``max_candidates_per_call`` (FR-BKT-11, O9-6) is the per-call candidate
+    part size; it must be a positive integer and is validated before any
+    state change. A configured limit never cuts a message: oversize candidate
+    sets are split into contiguous parts and every part must validate before
+    proposals merge.
     """
     overrides = _validate_pass_arguments(max_attempts_per_bucket, budget_overrides)
+    if (
+        not _is_plain_int(max_candidates_per_call)
+        or max_candidates_per_call <= 0
+    ):
+        raise ValueError(
+            "max_candidates_per_call must be a positive integer,"
+            f" got {max_candidates_per_call!r}"
+        )
     active_policy = policy if policy is not None else ProposalPolicy()
     outcomes: list[ProposalBucketOutcome] = []
     generated: list[int] = []
@@ -1637,6 +1813,7 @@ def run_proposal_pass(
                 fallback,
                 budget=budget,
                 policy=active_policy,
+                max_candidates_per_call=max_candidates_per_call,
             )
             if outcome is None:
                 continue  # first-writer-wins: another writer already succeeded

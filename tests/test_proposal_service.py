@@ -1856,9 +1856,9 @@ def test_artifact_stores_both_forms_and_the_hash(conn: sqlite3.Connection) -> No
     assert "mention_handle_map" in artifact_json
     assert artifact_json["mention_handle_map"] == {"@m1": "2002"}
     # dispatch hash: re-derivable from the request dataclass.
-    (request,) = generator.requests
+    # dispatch hash: re-derivable from the request dataclasses.
     assert str(row["request_sha256"]) == proposals._hash_text(
-        proposals.serialize_proposal_request(request, include_handle_map=False)
+        proposals.serialize_proposal_request_parts(generator.requests)
     )
     assert str(row["captured_at"]) == str(attempt["finished_at"])
 

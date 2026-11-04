@@ -18,7 +18,12 @@ from typing import Any
 import pytest
 
 from backend.bucketing import BucketParams
-from backend.config import ConfigError, load_config, load_worker_settings
+from backend.config import (
+    ConfigError,
+    PartSettings,
+    load_config,
+    load_worker_settings,
+)
 from backend.db.connection import connect
 from backend.db.migrations import apply_migrations
 from backend.orchestration import pipeline_backlog
@@ -137,9 +142,11 @@ class RecordingGenerator:
 
     def __init__(self, calls: list[str] | None = None) -> None:
         self.calls = calls if calls is not None else []
+        self.requests: list[Any] = []
 
     def generate(self, request: Any) -> ProposalResponse:
         self.calls.append("generate")
+        self.requests.append(request)
         return ProposalResponse(
             model_id="stub-model",
             model_version="stub-v1",
@@ -268,6 +275,55 @@ def test_tick_runs_relevance_before_proposals(
     assert calls == ["classify", "generate"]
     assert _state(conn, bucket_id) == "PROCESSED"
     assert classifier.requests[0].bucket_id == bucket_id
+
+
+def test_tick_forwards_the_configured_part_sizes(
+    conn: sqlite3.Connection,
+) -> None:
+    """W6/O9-6: the tick's PartSettings reach both AI passes (NFR-MNT-01)."""
+    conn.execute("INSERT INTO vertical (id, name) VALUES (1, 'Tech')")
+    conn.execute(
+        "INSERT INTO source_group (id, discord_channel_id, vertical_id)"
+        " VALUES (1, 'chan-1', 1)"
+    )
+    conn.execute(
+        "INSERT INTO person (id, name, discord_user_id, phone, role, active,"
+        " roll_number) VALUES (1, 'Head Person', '900000000000000001',"
+        " '+919800000001', 'Head', 1, 'roll-1')"
+    )
+    conn.execute("INSERT INTO person_vertical (person_id, vertical_id) VALUES (1, 1)")
+    _message(conn, 1, 0, sender_person_id=1)
+    _message(conn, 2, 1, sender_person_id=1)
+    _message(conn, 3, 2, sender_person_id=1)
+    _tick(conn, 5)
+    _tick(conn, 13)
+
+    classifier = ScriptedClassifier([])
+    generator = RecordingGenerator([])
+
+    _tick(
+        conn,
+        13,
+        classifier=classifier,
+        generator=generator,
+        parts=PartSettings(
+            relevance_max_messages_per_call=2,
+            proposal_max_candidates_per_call=1,
+        ),
+    )
+
+    assert [len(request.messages) for request in classifier.requests] == [2, 1]
+    assert [len(request.candidate_messages) for request in generator.requests] == [
+        1,
+        1,
+        1,
+    ]
+    for request in generator.requests:
+        assert [message.message_id for message in request.context_messages] == [
+            1,
+            2,
+            3,
+        ]
 
 
 def test_tick_without_models_runs_nothing_ai_specific(

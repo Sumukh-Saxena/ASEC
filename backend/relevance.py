@@ -128,8 +128,8 @@ import hashlib
 import json
 import sqlite3
 import time
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -139,6 +139,7 @@ from backend.bucket_lifecycle import (
     InvalidBucketTransitionError,
     transition_bucket_processing_state,
 )
+from backend.config import DEFAULT_RELEVANCE_MAX_MESSAGES_PER_CALL
 from backend.db.connection import transaction
 from backend.masking import mask_pii
 from backend.orchestration import processing_queue
@@ -389,17 +390,17 @@ def _redact_error_text(text: str) -> str:
     return redacted
 
 
-def _serialize_masked_request(request: RelevanceRequest) -> str:
-    """Canonical JSON of the exact masked request the adapter received.
+def _request_payload(request: RelevanceRequest) -> dict[str, object]:
+    """The canonical JSON object of one request part (NFR-AUD-02).
 
     The duplication of every field is deliberate: the artifact is a
-    self-contained durable record (NFR-AUD-02), immune to later edits of
-    the masking ruleset or policy text — a ruleset change can alter what a
-    NEW attempt sends, never what an OLD attempt stored. Content here is
-    already masked (:meth:`_bucket_request`); the original messages stay
-    verbatim in the source store (DR-03).
+    self-contained durable record, immune to later edits of the masking
+    ruleset or policy text — a ruleset change can alter what a NEW attempt
+    sends, never what an OLD attempt stored. Content here is already masked
+    (:meth:`_bucket_request`); the original messages stay verbatim in the
+    source store (DR-03).
     """
-    payload = {
+    return {
         "bucket_id": request.bucket_id,
         "group_handle": request.group_handle,
         "vertical_name": request.vertical_name,
@@ -417,7 +418,33 @@ def _serialize_masked_request(request: RelevanceRequest) -> str:
             for message in request.messages
         ],
     }
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _serialize_masked_request(request: RelevanceRequest) -> str:
+    """Canonical JSON of one exact masked request part the adapter received."""
+    return json.dumps(
+        _request_payload(request),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _serialize_masked_request_parts(
+    requests: Sequence[RelevanceRequest],
+) -> str:
+    """Canonical JSON artifact of every request part sent in one attempt.
+
+    Plan §4.8: the 0013 artifact stores a JSON object with a ``parts`` array
+    instead of one request, so an oversize bucket's exact per-part input stays
+    reconstructable and byte-stable (NFR-AUD-02).
+    """
+    return json.dumps(
+        {"parts": [_request_payload(request) for request in requests]},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
 
 
 def _request_sha256(serialized: str) -> str:
@@ -473,6 +500,39 @@ def _bucket_request(
     )
 
 
+def _partition_messages(
+    messages: Sequence[ContextMessage], size: int
+) -> tuple[tuple[ContextMessage, ...], ...]:
+    """Contiguous parts of at most ``size`` messages, order preserved (FR-BKT-11).
+
+    An empty bucket still yields one (empty) part so the adapter contract stays
+    one request in, one response out, and a zero-message bucket keeps its
+    documented zero-decision attempt. Nothing is ever dropped or truncated.
+    """
+    if not messages:
+        return ((),)
+    return tuple(
+        tuple(messages[start : start + size])
+        for start in range(0, len(messages), size)
+    )
+
+
+def _bucket_requests(
+    connection: sqlite3.Connection, bucket_id: int, max_messages_per_call: int
+) -> tuple[RelevanceRequest, ...]:
+    """Split the whole-bucket request into contiguous parts (FR-BKT-11).
+
+    The bucket's messages are ordered by ascending id (shared helper); each
+    part carries the same group/vertical context and instructions and only its
+    own messages. Every member appears in exactly one part.
+    """
+    full = _bucket_request(connection, bucket_id)
+    return tuple(
+        replace(full, messages=part)
+        for part in _partition_messages(full.messages, max_messages_per_call)
+    )
+
+
 def _validated_provenance(value: object, label: str) -> str:
     """EIR-03 provenance checks: non-blank, trimmed, verbatim otherwise."""
     if not isinstance(value, str) or value.strip() == "" or value != value.strip():
@@ -523,7 +583,7 @@ def _validated_response(
         if message_id not in bucket_ids:
             raise ClassifierContractError(
                 f"decision references message {message_id},"
-                f" which is not in bucket {request.bucket_id}"
+                f" which is not in this request part (bucket {request.bucket_id})"
             )
         if message_id in covered:
             raise ClassifierContractError(
@@ -660,37 +720,65 @@ def _run_attempt(
     classifier: RelevanceClassifier,
     stage: str,
     budget: int,
+    max_messages_per_call: int,
 ) -> _AttemptResult:
     """Run one attempt against ``classifier`` and persist its full record.
 
     Order of operations: budget pre-check (spares an adapter call), the
-    stateless adapter call over the masked whole-bucket request, backend
-    validation, then one ``transaction()`` that re-checks the budget (the
-    serialized write window is authoritative), refuses second-guessing a
-    competing writer's committed success (first writer wins), inserts the
-    attempt row and — on success — every decision and the latency record,
-    or — on failure — marks the bucket's messages UNCLASSIFIED. A partially
-    recorded attempt is impossible; a crash mid-call records nothing at all.
+    stateless adapter calls over the masked request parts (FR-BKT-11: one
+    closed bucket split into contiguous parts in ascending message id), backend
+    validation of every part, then one ``transaction()`` that re-checks the
+    budget (the serialized write window is authoritative), refuses
+    second-guessing a competing writer's committed success (first writer wins),
+    inserts the attempt row and — on success — every merged decision and the
+    latency record, or — on failure — marks the bucket's messages UNCLASSIFIED.
+    A part failure fails the whole attempt; no partial decisions are written,
+    and a partially recorded attempt is impossible. Every part's provenance
+    must agree, because one attempt row carries one provenance (EIR-03). A
+    crash mid-call records nothing at all.
     """
     if _attempt_count(connection, bucket_id) >= budget:
         return _AttemptResult(attempt_id=None, classified=False, decision_count=0)
-    request = _bucket_request(connection, bucket_id)
+    requests = _bucket_requests(connection, bucket_id, max_messages_per_call)
     started_at = _utc_now()
     failure: Exception | None = None
-    validated: tuple[tuple[str, str, str], tuple[tuple[int, str], ...]] | None = None
-    call_latency: float | None = None
-    call_started_mono = time.monotonic()
-    try:
-        response = classifier.classify(request)
-        # The latency metric covers the adapter call alone (audit F7);
+    sent: list[RelevanceRequest] = []
+    provenance: tuple[str, str, str] | None = None
+    decisions: list[tuple[int, str]] = []
+    call_latency = 0.0
+    for request in requests:
+        # Recorded before the call: the artifact holds the parts the adapter
+        # actually received, including a part whose call then failed.
+        sent.append(request)
+        call_started = time.monotonic()
+        try:
+            response = classifier.classify(request)
+        except Exception as error:  # noqa: BLE001 - FR-REL-07/AC-12: every
+            # classifier-side failure is an execution failure, recorded as
+            # FAILED_RETRYABLE. Interrupts (KeyboardInterrupt/SystemExit) are
+            # BaseException and propagate unchanged, leaving nothing written.
+            call_latency += time.monotonic() - call_started
+            failure = error
+            break
+        # The latency metric covers the adapter calls alone (audit F7);
         # backend validation time is deliberately not part of it.
-        call_latency = time.monotonic() - call_started_mono
-        validated = _validated_response(response, request)
-    except Exception as error:  # noqa: BLE001 - FR-REL-07/AC-12: every
-        # classifier-side failure is an execution failure, recorded as
-        # FAILED_RETRYABLE. Interrupts (KeyboardInterrupt/SystemExit) are
-        # BaseException and propagate unchanged, leaving nothing written.
-        failure = error
+        call_latency += time.monotonic() - call_started
+        try:
+            part_provenance, part_decisions = _validated_response(response, request)
+            if provenance is None:
+                provenance = part_provenance
+            elif part_provenance != provenance:
+                raise ClassifierContractError(
+                    "response provenance differs between request parts:"
+                    f" {provenance!r} vs {part_provenance!r}"
+                )
+            decisions.extend(part_decisions)
+        except Exception as error:  # noqa: BLE001 - same failure posture
+            failure = error
+            break
+    validated: tuple[tuple[str, str, str], tuple[tuple[int, str], ...]] | None = (
+        None if provenance is None else (provenance, tuple(decisions))
+    )
     with transaction(connection):
         # Authoritative budget re-check inside the serialized writer window
         # (defense in depth against writers outside this connection's
@@ -765,7 +853,7 @@ def _run_attempt(
                 " VALUES (?, ?, ?, ?)",
                 (
                     LATENCY_METRIC_LABEL,
-                    float(call_latency) if call_latency is not None else 0.0,
+                    float(call_latency),
                     finished_at,
                     attempt_id,
                 ),
@@ -780,12 +868,14 @@ def _run_attempt(
                 "               WHERE bucket_id = ?)",
                 (bucket_id,),
             )
-        # Masked-input audit snapshot (approved F3, NFR-AUD-02): one durable
-        # artifact per committed adapter-executing attempt — success or
-        # execution failure, primary or fallback — captured inside the same
-        # transaction that commits the attempt row. Refused and superseded
-        # paths returned above, so absence is consistent by construction.
-        serialized_request = _serialize_masked_request(request)
+        # Masked-input audit snapshot (approved F3, NFR-AUD-02; plan §4.8):
+        # one durable artifact per committed adapter-executing attempt —
+        # success or execution failure, primary or fallback — whose
+        # ``parts`` array holds every request part the adapter received.
+        # Captured inside the same transaction that commits the attempt row.
+        # Refused and superseded paths returned above, so absence is
+        # consistent by construction.
+        serialized_request = _serialize_masked_request_parts(sent)
         connection.execute(
             "INSERT INTO relevance_attempt_input"
             " (attempt_id, masking_ruleset_version, policy_version,"
@@ -853,6 +943,7 @@ def _process_bucket(
     fallback: RelevanceClassifier | None,
     *,
     budget: int,
+    max_messages_per_call: int,
 ) -> BucketOutcome | None:
     """Classify one bucket: primary attempt, then fallback only on failure.
 
@@ -863,11 +954,17 @@ def _process_bucket(
     PROCESSED through the legal edge set only. Returns ``None`` when the
     bucket was already classified by a competing writer between discovery
     and commit (first writer wins — nothing is contributed, nothing is
-    advanced here).
+    advanced here). ``max_messages_per_call`` fixes the per-attempt part
+    size for both the primary and the fallback (FR-BKT-11).
     """
     created: list[int] = []
     primary_result = _run_attempt(
-        connection, bucket_id, primary, STAGE_RELEVANCE_CLASSIFICATION, budget
+        connection,
+        bucket_id,
+        primary,
+        STAGE_RELEVANCE_CLASSIFICATION,
+        budget,
+        max_messages_per_call,
     )
     if primary_result.attempt_id is None:
         if primary_result.superseded:
@@ -894,6 +991,7 @@ def _process_bucket(
         fallback,
         STAGE_RELEVANCE_FALLBACK_CLASSIFICATION,
         budget,
+        max_messages_per_call,
     )
     if fallback_result.attempt_id is None:
         if fallback_result.superseded:
@@ -951,6 +1049,7 @@ def run_relevance_pass(
     *,
     max_attempts_per_bucket: int = DEFAULT_MAX_ATTEMPTS_PER_BUCKET,
     budget_overrides: Mapping[int, int] | None = None,
+    max_messages_per_call: int = DEFAULT_RELEVANCE_MAX_MESSAGES_PER_CALL,
 ) -> RelevancePassResult:
     """Run one deterministic classification pass over eligible buckets.
 
@@ -988,6 +1087,12 @@ def run_relevance_pass(
     refusal happens before any adapter call and the exhaustion is reported
     honestly — EXHAUSTED, back to FAILED, zero new rows). Buckets without
     an override keep the ordinary budget; history stays append-only.
+
+    ``max_messages_per_call`` (FR-BKT-11, O9-6) is the per-call part size;
+    it must be a positive integer and is validated before any state change.
+    A configured limit never cuts a message: a bucket larger than the limit
+    is split into contiguous parts and every part must validate before the
+    decisions merge.
     """
     if (
         isinstance(max_attempts_per_bucket, bool)
@@ -995,6 +1100,12 @@ def run_relevance_pass(
         or max_attempts_per_bucket < 1
     ):
         raise ValueError("max_attempts_per_bucket must be a positive integer")
+    if (
+        isinstance(max_messages_per_call, bool)
+        or not isinstance(max_messages_per_call, int)
+        or max_messages_per_call < 1
+    ):
+        raise ValueError("max_messages_per_call must be a positive integer")
     overrides: Mapping[int, int] = dict(budget_overrides or {})
     for bucket_id, value in overrides.items():
         if isinstance(bucket_id, bool) or not isinstance(bucket_id, int):
@@ -1028,6 +1139,7 @@ def run_relevance_pass(
                 primary,
                 fallback,
                 budget=overrides.get(bucket_id, max_attempts_per_bucket),
+                max_messages_per_call=max_messages_per_call,
             )
             if outcome is not None:
                 outcomes.append(outcome)

@@ -8,7 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from backend.config import ConfigError, is_secret_key, load_config
+from backend.config import (
+    DEFAULT_PROPOSAL_MAX_CANDIDATES_PER_CALL,
+    DEFAULT_RELEVANCE_MAX_MESSAGES_PER_CALL,
+    ConfigError,
+    PartSettings,
+    is_secret_key,
+    load_config,
+    load_part_settings,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _TOKEN_LIKE = re.compile(r"[A-Za-z0-9_\-]{24,}")
@@ -105,6 +113,37 @@ def test_is_secret_key_matches_common_secret_names() -> None:
     assert is_secret_key("API_KEY")
     assert not is_secret_key("APP_ENV")
     assert not is_secret_key("LOG_LEVEL")
+
+
+def test_part_settings_defaults_are_the_owner_approved_values() -> None:
+    """O9-6: 40 relevance messages and 20 proposal candidates per part."""
+    assert DEFAULT_RELEVANCE_MAX_MESSAGES_PER_CALL == 40
+    assert DEFAULT_PROPOSAL_MAX_CANDIDATES_PER_CALL == 20
+    assert load_part_settings(load_config({})) == PartSettings(
+        relevance_max_messages_per_call=40,
+        proposal_max_candidates_per_call=20,
+    )
+
+
+def test_part_settings_are_read_from_configuration() -> None:
+    config = load_config(
+        {
+            "RELEVANCE_MAX_MESSAGES_PER_CALL": "7",
+            "PROPOSAL_MAX_CANDIDATES_PER_CALL": "3",
+        }
+    )
+    assert load_part_settings(config) == PartSettings(
+        relevance_max_messages_per_call=7,
+        proposal_max_candidates_per_call=3,
+    )
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc", "2.5"])
+def test_invalid_part_settings_fail_loudly(value: str) -> None:
+    """NFR-MNT-01: a limit is validated, never silently clamped."""
+    config = load_config({"RELEVANCE_MAX_MESSAGES_PER_CALL": value})
+    with pytest.raises(ConfigError):
+        load_part_settings(config)
 
 
 def test_env_example_exists_and_has_no_real_secrets() -> None:

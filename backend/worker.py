@@ -45,6 +45,7 @@ from backend.clock import (
     ClockResult,
     advance_group_clock,
 )
+from backend.config import PartSettings
 from backend.db.connection import transaction
 from backend.orchestration import run_bucketing_pass
 from backend.proposals import ProposalGenerator, run_proposal_pass
@@ -92,6 +93,7 @@ def run_pipeline_tick(
     classifier: RelevanceClassifier | None = None,
     generator: ProposalGenerator | None = None,
     params: BucketParams | None = None,
+    parts: PartSettings | None = None,
 ) -> TickResult:
     """Run one durable pipeline tick; ``now`` is the injected clock instant.
 
@@ -100,6 +102,8 @@ def run_pipeline_tick(
     messages for all groups. Passing ``classifier`` or ``generator`` runs that
     pass after formation; exceptions from the passes are not swallowed here —
     the worker loop records the failure and retries on the next tick.
+    ``parts`` carries the validated O9-6 per-call part sizes (FR-BKT-11); when
+    omitted the passes use their owner-approved defaults.
     """
     if clock_mode not in CLOCK_MODES:
         raise ClockModeError(
@@ -112,11 +116,24 @@ def run_pipeline_tick(
     )
     assignment = run_bucketing_pass(connection, params=params)
     _record_stage_latency(connection, assignment, now)
+    active_parts = PartSettings() if parts is None else parts
     relevance = (
-        None if classifier is None else run_relevance_pass(connection, classifier)
+        None
+        if classifier is None
+        else run_relevance_pass(
+            connection,
+            classifier,
+            max_messages_per_call=active_parts.relevance_max_messages_per_call,
+        )
     )
     proposals = (
-        None if generator is None else run_proposal_pass(connection, generator)
+        None
+        if generator is None
+        else run_proposal_pass(
+            connection,
+            generator,
+            max_candidates_per_call=active_parts.proposal_max_candidates_per_call,
+        )
     )
     return TickResult(
         groups=groups,

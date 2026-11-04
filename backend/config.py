@@ -140,3 +140,63 @@ def _positive_float(config: Config, name: str, default: float) -> float:
     if not value > 0:
         raise ConfigError(f"{name} must be positive, got {raw!r}")
     return value
+
+
+#: O9-6 owner-approved defaults for oversize-bucket partitioning (FR-BKT-11):
+#: 40 relevance messages and 20 proposal candidates per part. The values are
+#: configuration, not SRS numbers; they are revisited after the Phase 10
+#: benchmark. A configured limit is never a reason to cut a message.
+DEFAULT_RELEVANCE_MAX_MESSAGES_PER_CALL = 40
+DEFAULT_PROPOSAL_MAX_CANDIDATES_PER_CALL = 20
+
+#: Configuration keys read by :func:`load_part_settings`.
+RELEVANCE_MAX_MESSAGES_KEY = "RELEVANCE_MAX_MESSAGES_PER_CALL"
+PROPOSAL_MAX_CANDIDATES_KEY = "PROPOSAL_MAX_CANDIDATES_PER_CALL"
+
+
+@dataclass(frozen=True)
+class PartSettings:
+    """Validated per-call part sizes for the two AI stages (FR-BKT-11).
+
+    One part size per stage: relevance partitions a bucket's messages,
+    proposals partition the candidate set. Both are positive integers, passed
+    explicitly into the passes so a run is reproducible from its configuration.
+    """
+
+    relevance_max_messages_per_call: int = DEFAULT_RELEVANCE_MAX_MESSAGES_PER_CALL
+    proposal_max_candidates_per_call: int = DEFAULT_PROPOSAL_MAX_CANDIDATES_PER_CALL
+
+
+def load_part_settings(config: Config) -> PartSettings:
+    """Build :class:`PartSettings` from optional configuration overrides.
+
+    Absent or blank values keep the O9-6 defaults. A value that is not a
+    positive integer raises :class:`ConfigError` before any pass runs — an
+    invalid limit is never clamped silently (NFR-MNT-01).
+    """
+    defaults = PartSettings()
+    return PartSettings(
+        relevance_max_messages_per_call=_positive_int(
+            config,
+            RELEVANCE_MAX_MESSAGES_KEY,
+            defaults.relevance_max_messages_per_call,
+        ),
+        proposal_max_candidates_per_call=_positive_int(
+            config,
+            PROPOSAL_MAX_CANDIDATES_KEY,
+            defaults.proposal_max_candidates_per_call,
+        ),
+    )
+
+
+def _positive_int(config: Config, name: str, default: int) -> int:
+    raw = config.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError as error:
+        raise ConfigError(f"{name} must be an integer, got {raw!r}") from error
+    if value < 1:
+        raise ConfigError(f"{name} must be positive, got {raw!r}")
+    return value

@@ -1820,15 +1820,17 @@ def test_snapshot_persists_canonical_masked_input_on_success(
     row = rows[0]
     assert row["masking_ruleset_version"] == MASKING_RULESET_VERSION
     assert row["policy_version"] == CLASSIFICATION_POLICY_VERSION
-    expected = relevance._serialize_masked_request(classifier.requests[0])
+    expected = relevance._serialize_masked_request_parts(classifier.requests)
     assert row["masked_request"] == expected
     assert row["request_sha256"] == relevance._request_sha256(expected)
     assert str(row["captured_at"]).strip() != ""
 
     stored = json.loads(str(row["masked_request"]))
-    assert stored["bucket_id"] == bucket_id
-    assert stored["instructions"] == CLASSIFICATION_POLICY
-    assert [entry["message_id"] for entry in stored["messages"]] == [
+    assert len(stored["parts"]) == 1
+    part = stored["parts"][0]
+    assert part["bucket_id"] == bucket_id
+    assert part["instructions"] == CLASSIFICATION_POLICY
+    assert [entry["message_id"] for entry in part["messages"]] == [
         member_id for member_id, _ in members
     ]
 
@@ -1847,7 +1849,7 @@ def test_snapshot_persists_canonical_masked_input_on_failure(
     rows = _snapshot_rows(conn, attempt_id)
     assert len(rows) == 1
     stored = json.loads(str(rows[0]["masked_request"]))
-    assert stored["bucket_id"] == bucket_id
+    assert stored["parts"][0]["bucket_id"] == bucket_id
 
 
 def test_snapshot_persists_for_primary_and_fallback_attempts(
@@ -1875,11 +1877,11 @@ def test_snapshot_persists_for_primary_and_fallback_attempts(
     }
     assert len(_snapshot_rows(conn, attempt_ids[0])) == 1
     assert len(_snapshot_rows(conn, attempt_ids[1])) == 1
-    assert relevance._serialize_masked_request(
-        primary.requests[0]
+    assert relevance._serialize_masked_request_parts(
+        primary.requests
     ) == _snapshot_rows(conn, attempt_ids[0])[0]["masked_request"]
-    assert relevance._serialize_masked_request(
-        fallback.requests[0]
+    assert relevance._serialize_masked_request_parts(
+        fallback.requests
     ) == _snapshot_rows(conn, attempt_ids[1])[0]["masked_request"]
 
 
@@ -1913,7 +1915,9 @@ def test_no_unmasked_sensitive_input_in_snapshot(
     ):
         assert raw not in masked_request
     # self-consistency: the artifact equals what the adapter actually saw
-    assert masked_request == relevance._serialize_masked_request(classifier.requests[0])
+    assert masked_request == relevance._serialize_masked_request_parts(
+        classifier.requests
+    )
 
 
 def test_snapshot_is_stable_when_masking_rules_change_later(
@@ -2010,7 +2014,7 @@ def test_snapshot_written_for_empty_members_bucket(
     rows = _snapshot_rows(conn, attempt_id)
     assert len(rows) == 1
     stored = json.loads(str(rows[0]["masked_request"]))
-    assert stored["messages"] == []
+    assert stored["parts"][0]["messages"] == []
 
 
 # F4 --- terminal-failure discoverability, convergence and recovery ---------
