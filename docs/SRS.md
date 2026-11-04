@@ -327,7 +327,7 @@ Figure 8 shows how an AH’s cross-vertical request is approved or denied (FR-XV
 
 - **FR-ROS-01** The roster (name as used in chat, institute roll number, Discord ID, phone number, role, vertical(s), reports-to line) shall be loaded before the festival.
 - **FR-ROS-02** The roster is fixed during the festival. The MVP has no import, sync or edit flows, and only Admin can change roster data.
-- **FR-ROS-03** Every sign-in to the app shall resolve to exactly one roster person. The person signs in with their institute roll number, and a one-time password (OTP) is sent to the phone number the roster holds for that roll number, never to a number typed at sign-in.
+- **FR-ROS-03** Every sign-in to the app shall resolve to exactly one roster person. The person signs in with their institute roll number, and a one-time password (OTP) is sent as a direct message from the ASEC bot to the Discord ID the roster holds for that roll number, never to an account or number typed at sign-in. A roster person with no Discord ID cannot sign in until the Admin supplies one before the festival (FR-ROS-02).
 - **FR-AUT-01** The backend shall authorize every protected operation using server-side identity, role and scope. Hiding a button is not authorization. A direct API call shall get the same result as the app.
 - **FR-AUT-02** Protected operations include: proposal review, task creation and edit, assignment, reassignment, cancellation, status change, cross-vertical approval, announcements, viewing system internals, and roster changes.
 - **FR-AUT-03** A volunteer shall not assign tasks to others, review proposals or create tasks.
@@ -381,7 +381,7 @@ Figure 8 shows how an AH’s cross-vertical request is approved or denied (FR-XV
 
 | Entity | Holds |
 |---|---|
-| Person (roster) | Name, Discord ID, phone, role, vertical memberships, reports-to, active flag, institute roll number as a fallback |
+| Person (roster) | Name, Discord ID, phone, role, vertical memberships, reports-to, active flag, institute roll number (sign-in identifier, FR-ROS-03) |
 | Vertical, Group | Organizational units and the group-to-vertical mapping |
 | Message | Content, metadata, mentions, flags (LATE, UNMAPPED, UNKNOWN_SENDER, UNCLASSIFIED) |
 | Reaction event | Message, reactor, emoji, added or removed, time |
@@ -424,7 +424,7 @@ Figure 9 shows the main records and how they relate.
   - Outputs are schema-checked before use. A malformed or incomplete output is an execution failure, never a valid empty result.
   - Every response carries the model and version and the prompt or configuration version.
   - The AI layer never writes to the database.
-- **EIR-04** Notification delivery. Push notifications to phones through Firebase Cloud Messaging
+- **EIR-04** Notification delivery. Push notifications to phones through Firebase Cloud Messaging. Sign-in OTPs are delivered as direct messages from the ASEC bot through the Discord interface (EIR-01, FR-ROS-03).
 - **EIR-05** Authorization. Every interface enforces the same rules.
 
 Figure 10 shows one AI call, from masking to retry or permanent failure.

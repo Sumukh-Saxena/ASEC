@@ -18,7 +18,7 @@ The core logic is careful and well tested, but **nothing yet exists that lets it
 
 **B5. Backups and recovery do not exist [repo].** There is no backup code, no checkpoint management, and no restore test. All state, including the proposals, decisions and task history, is one SQLite file. Needed: a scheduled online backup (SQLite's backup API, not a file copy while WAL is active) to a second location, retention rules, and a rehearsed restore. Never keep the live database inside a cloud-synced folder (OneDrive, Drive); sync tools corrupt SQLite.
 
-**B6. The real data path has never run [reasoned].** Every external edge (Discord, the model, FCM, SMS) is tested only against fakes. The first real run will find adapter bugs. Required: an end-to-end **replay load test** (NFR-PERF-03: 60 messages/min sustained, 120/min burst, 12 groups) through the real pipeline with a real model, and a **shadow-mode rollout** (section 5) before anyone depends on it.
+**B6. The real data path has never run [reasoned].** Every external edge (Discord, the model, FCM, the OTP DM) is tested only against fakes. The first real run will find adapter bugs. Required: an end-to-end **replay load test** (NFR-PERF-03: 60 messages/min sustained, 120/min burst, 12 groups) through the real pipeline with a real model, and a **shadow-mode rollout** (section 5) before anyone depends on it.
 
 **B7. Privacy and consent are unresolved [verify].** The system reads volunteers' chat, stores it, sends text to a model, and keeps phone numbers and roll numbers. In India the Digital Personal Data Protection Act, 2023 likely applies to personal data of volunteers; typical obligations include notice, a lawful basis such as consent, purpose limitation, retention limits and breach handling. Concrete tasks: a short notice shown to everyone whose chat is processed, a consent record for the roster, a retention and deletion procedure, access control on the database, and no training use without consent (already your default). Check with someone qualified at your institute. Also read Discord's current Developer Policy: it requires the Message Content privileged intent for bots that read messages, and I recall restrictions on using message content for AI training; confirm before relying on the "transfer for training" idea.
 
@@ -26,9 +26,9 @@ The core logic is careful and well tested, but **nothing yet exists that lets it
 
 ## 3. High priority
 
-**H1. Authentication abuse [reasoned][plan].** Sign-in is roll number plus an SMS code to the roster phone. Roll numbers are semi-public, so an attacker can trigger codes to other people's phones (SMS bombing, cost). Rate limits must apply per roll number, per phone and per IP; the response must not reveal whether a roll number exists; codes must be short-lived, single-use and attempt-limited. Phase 12 plans some of this (O12-3); add the per-IP limit and a global daily SMS cap with an alert.
+**H1. Authentication abuse [reasoned][plan].** Sign-in is roll number plus a one-time code delivered as a Discord DM from the ASEC bot to the roster Discord ID (amended FR-ROS-03). Roll numbers are semi-public, so an attacker can trigger DMs to other people (DM spam to a person, not SMS bombing and no per-message cost). Rate limits must apply per roll number, per person and per IP; the response must not reveal whether a roll number exists; codes must be short-lived, single-use and attempt-limited. Phase 12 plans some of this (O12-3); add the per-IP limit and a global daily OTP-DM cap with an alert. A failed DM is recorded but must not be distinguishable from success in the sign-in response.
 
-**H2. SMS delivery in India [verify].** OTP SMS commonly needs sender and message-template registration with the carrier-regulated system (DLT). It can take days; start now. Without it sign-in cannot work. Have a fallback: an Admin-assisted code for a small number of users.
+**H2. SMS delivery in India [obsolete].** No SMS provider is used: the sign-in OTP is a Discord DM from the ASEC bot (amended FR-ROS-03, O11-1 (d)), so carrier sender/template registration (DLT) does not apply. Superseded text kept for history only. Residual verification: Discord's rules on DMing a user who shares no server with the bot are UNVERIFIED and must be checked against Discord's developer docs before Phase 11.
 
 **H3. App distribution [reasoned].** The SRS says Android and iOS. Push to iOS needs an Apple developer account and APNs setup; Android can be sideloaded. The mobile app is outside this repo and nobody has planned it. If time is short, ship Android only for the festival and say so in the SRS.
 
@@ -80,9 +80,9 @@ Workstreams (plan before executing, same structure as the other phases):
 - **Performance is fine at this scale [repo].** Assigning 2,000 messages to buckets in one group took 0.5 s (0.1 ms per message at 500, 0.3 ms at 2,000: it grows with group size but stays small). Model calls are made outside write transactions, so a slow model does not block the database. Do not worry about SQLite for one host; revisit only if workers move to separate machines.
 - **Write contention [repo]:** busy timeout is 5 s with WAL; the API and the worker in separate processes can still collide briefly. Keep write transactions short, and make API writes retry once on "database is locked".
 - **Database encryption and disk:** use full-disk encryption on the host (BitLocker or equivalent); the database holds phone numbers and message text in plain form.
-- **Roster loading [plan]:** a bad roster is a security bug (wrong role means wrong authority). The loader must validate duplicates, role names, reporting cycles, Discord ID uniqueness and phone format, and show a preview before committing.
+- **Roster loading [plan]:** a bad roster is a security bug (wrong role means wrong authority). The loader must validate duplicates, role names, reporting cycles, Discord ID presence and uniqueness for every person who will sign in (FR-ROS-03), and phone format, and show a preview before committing.
 - **Language:** the interface and the notices should be in the languages your volunteers read.
-- **Test gaps:** mypy covers only `backend`; tests have about 89 typing errors; there is no test with a real Discord, FCM, SMS or model. Add contract tests against recorded real responses.
+- **Test gaps:** mypy covers only `backend`; tests have about 89 typing errors; there is no test with a real Discord, FCM, OTP DM or model. Add contract tests against recorded real responses.
 - **Documentation hygiene:** README still mentions the old Piggyback design; commit messages have been misleading; keep the runbook in the repo.
 - **Time zone display:** store UTC (done), show Asia/Kolkata in the app and notifications.
 
@@ -93,7 +93,7 @@ Idempotent ingestion; durable attempts with retry budgets and recovery; no model
 ## 9. Next actions, in order
 
 1. Reset the Discord token, make the GitHub repo private, stop sharing `.env`.
-2. Decide the topology (section 4) and the SMS provider; start the SMS registration.
+2. Decide the topology (section 4); no SMS provider is needed (OTP is a Discord DM from the bot), but check Discord's DM rules (H2) before Phase 11.
 3. Ask someone qualified about the privacy notice and consent; read Discord's developer policy.
 4. Add Phase 13 to the roadmap and move logging, startup checks and alerting into Phase 9.
 5. Plan the staging environment and the shadow rollout date, and work backwards from the festival date.

@@ -114,7 +114,7 @@ notification timing, edit requirements, or implement the client app.
 
 | ID | What it fixes for you |
 |---|---|
-| **PB-5** | `person.role IN ('Admin','Head','AH','Volunteer')`, `phone`/`roll_number` NOT NULL, `reports_to` FK — sign-in resolves one person by roll number and reads the roster phone. |
+| **PB-5** | `person.role IN ('Admin','Head','AH','Volunteer')`, `phone`/`roll_number` NOT NULL, `reports_to` FK — sign-in resolves one person by roll number and reads the roster Discord ID for the OTP DM. |
 | **PB-4** | SQLite + WAL, `BEGIN IMMEDIATE`, one backend host → one connection per request. |
 | **OD-REV-6** | `task.creator_id` is the primary sender; the actor is recorded in history — do not derive authority from the creator. |
 | **Phase 7 contract** | `visible_tasks`/`_live_task_row` is the only task filter; hidden `PENDING`/`DENIED` and cancelled tasks never reach a dashboard. |

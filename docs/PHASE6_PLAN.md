@@ -110,9 +110,9 @@ Phase 6 implements the **proposal review service** and notification staging hook
 2. **Cross-vertical approval decision voting (Phase 8)**: Processing approval or denial decisions
    from target vertical AHs/Head (`FR-XV-04..06`). Phase 6 stages the request and initial state
    dimensions upon acceptance, but does not implement the approval voting service.
-3. **External notification delivery transport (Phase 9)**: FCM push dispatch, SMS OTP,
-   network transport, delivery worker loops (`FR-NOT-06..07`). Phase 6 writes notification rows
-   in `0008` storage only.
+3. **External notification delivery transport (Phase 9)**: FCM push dispatch, OTP delivery
+   by Discord DM from the ASEC bot, network transport, delivery worker loops (`FR-NOT-06..07`,
+   `FR-ROS-03`). Phase 6 writes notification rows in `0008` storage only.
 4. **HTTP / REST / GraphQL API & Mobile App UI (Phase 10)**: FastAPIs, JWT authentication,
    and mobile screens (`FR-UI-*`). Phase 6 delivers pure Python backend services and domain functions.
 5. **Direct Discord mutations**: Discord is read-only source; no Discord messages or bot posts.

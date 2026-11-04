@@ -77,8 +77,8 @@ tests or commits. This file is the first thing a resumed session must read after
   defaults; replay export schema; clock seed/mode; part sizes.
 - Phase 10 (O10-1..O10-6): wire contract; labelled set and labelling; accuracy thresholds
   for AI-06; models/hardware; archive-only retention; 30 s P95 acceptance.
-- Phase 11 (O11-1..O11-5): OTP/SMS provider vs EIR-04 FCM; FCM mode; retry defaults;
-  vertical audience; deep-link scheme.
+- Phase 11 (O11-1..O11-5): OTP delivery channel (settled: Discord DM from the ASEC bot, no
+  SMS provider) vs EIR-04 FCM; FCM mode; retry defaults; vertical audience; deep-link scheme.
 - Phase 12 (O12-1..O12-7): HTTP framework; route surface; session/OTP values; roster-edit
   gap; FR-AUT matrix approval; mobile app/TLS; retention.
 

@@ -117,6 +117,7 @@ push/OTP (11), HTTP API or auth (12), Phase 7 task semantics, or edit requiremen
 | **PB-4** | SQLite stays (WAL, `BEGIN IMMEDIATE`, one backend host). |
 | **Phase 7 contract** | Requests handed to AI carry handles only; Phase 9 must not add a raw Discord id to a request. |
 | **Retention** | Archive only. |
+| **DM note (Phase 11 OTP, amendment 2026-11-03)** | The same bot must be able to open a DM channel with a roster Discord ID and send one message (used for the sign-in OTP in Phase 11, FR-ROS-03/EIR-04). No new migration is added for this. A failed DM is recorded and must not be distinguishable from success in the sign-in response. Discord's rules on DMing a user who shares no server with the bot are **UNVERIFIED**; check them against Discord's developer docs before Phase 11. Do not invent an email or admin-code fallback; if one seems needed, list it as an OWNER decision in `docs/OWNER_ANSWERS.md` only. |
 
 ---
 

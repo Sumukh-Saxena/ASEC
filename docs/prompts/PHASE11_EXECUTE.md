@@ -85,7 +85,8 @@ If the tree is red, **stop and report**.
   rolls back or blocks the change that caused it (FR-NOT-04).
 - **No second notification row on retry** (FR-NOT-05). No batching (FR-NOT-02).
 - Do not invent a provider, audience type or notification channel. If the SRS is silent
-  (OTP channel, deep-link scheme), it stays an OWNER item.
+  (OTP channel, deep-link scheme), it stays an OWNER item. The OTP channel is settled:
+  Discord DM from the ASEC bot (`docs/OWNER_ANSWERS.md`, O11-1 (d)).
 - Tests first with real RED evidence; plain `pytest`; the suite makes no network call.
 - Documentation edits limited to `docs/PHASE11_PLAN.md` §15 and
   `docs/PLANNING_PROGRESS.md`.
@@ -97,7 +98,8 @@ If the tree is red, **stop and report**.
 Authorized to:
 
 - create `backend/notification_delivery.py` (rendering, list, read, delivery, fan-out,
-  sweep, `PushSender`, `FcmPushSender`, `OtpSender`, `RecordingOtpSender`);
+  sweep, `PushSender`, `FcmPushSender`, `OtpSender`, `RecordingOtpSender`,
+  `DiscordDmOtpSender`);
 - add `backend/db/migrations/0023_push_endpoints.sql` exactly as plan §5 (`push_endpoint`
   + `notification_read`, same version number, no renumbering);
 - add endpoint helpers (`register_endpoint`, `deactivate_endpoint`);
@@ -124,17 +126,18 @@ hours, build the HTTP API or sign-in flow (12), add a provider, or edit requirem
 ## 6. OWNER DECISIONS FOR THIS PHASE
 
 ```
-O11-1 OTP/SMS provider and credentials; resolve FR-ROS-03 (SMS to roster phone) vs
-      EIR-04 (FCM).
-      Options: (a) SMS vendor for OTP + FCM for push; (b) FCM-only; (c) defer, in-app
-      code for testing only.
-      Plan recommendation: (a), matching the FR-ROS-03 wording; owner supplies
-      credentials. Needed before W5.
-      OWNER ANSWER: (c) Build the OTP sender interface with a development sender now.
-      **OWNER SUPPLIES** the SMS provider before go-live (in India, bulk SMS usually needs
-      sender and template registration, so start early). FR-ROS-03 needs SMS to the roster
-      phone because the app has no device token before sign-in. STOP GATE for live OTP;
-      W5's interface and development sender proceed.
+O11-1 OTP delivery channel; resolve how the OTP reaches the person (FR-ROS-03 vs
+      EIR-04 FCM).
+      Options: (a) SMS vendor for OTP + FCM for push (superseded); (b) FCM-only; (c)
+      defer, in-app code for testing only; (d) OTP by Discord DM from the ASEC bot to the
+      roster Discord ID, no SMS provider.
+      Plan recommendation: (d), per the owner's amendment to FR-ROS-03 and EIR-04.
+      OWNER ANSWER: (d) OTP by Discord DM from the ASEC bot to the roster Discord ID; no
+      SMS provider; build the `OtpSender` interface with a development sender and a Discord
+      DM sender (`otp_sender` parameter; `OtpSenderNotConfigured` when neither is
+      configured). No SMS-provider stop gate; no email or admin-code fallback.
+      A failed DM is recorded and must not be distinguishable from success in the
+      sign-in response.
 
 O11-2 FCM mode.
       Options: (a) legacy HTTP server key (no dependency, deprecated); (b) HTTP v1 with
@@ -177,7 +180,7 @@ defaults only if the owner says "use the recommendations".
 | W2 | `deliver_pending`: claim in one transaction, send outside it, attempt insert, state update, backoff, `EXHAUSTED`, no duplicate row. | C2 |
 | W3 | Announcement fan-out (`VERTICAL`, `AH_VOLUNTEERS`) + `sweep_unfanned_announcements`. | C3 |
 | W4 | `PushSender` + `FcmPushSender` (mode per O11-2), payload, 401/403 permanent, 429/5xx retry, collapse key. | C4 |
-| W5 | `OtpSender` interface, `RecordingOtpSender`, `NotificationOtpSender`, unconfigured path. | C4 |
+| W5 | `OtpSender` interface, `RecordingOtpSender`, development sender, `DiscordDmOtpSender`, unconfigured path. | C4 |
 | W6 | `run_delivery_tick` wiring, mutation battery (ten, plan §7), audits, DoD battery, §15. | final |
 
 Checkpoint green = full `pytest` green + ruff/mypy clean + tree runnable. W4 is gated by

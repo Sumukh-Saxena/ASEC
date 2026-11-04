@@ -54,8 +54,8 @@ Real facts verified today:
 - No HTTP API or auth/session flow (Phase 12); the OTP sender is only an interface.
 - No change to when notifications are staged (Phases 6/7/8) and no batching (FR-NOT-02,
   FR-PM-06 is Post-MVP).
-- No SMS provider selection unless the owner decides (O11-1); the plan ships a fake/test
-  sender only.
+- No SMS provider (amendment: OTP is a Discord DM from the ASEC bot to the roster Discord ID;
+  O11-1); the plan ships a development sender and a Discord DM sender behind one interface.
 - No mobile app code, deep-link handler or UI.
 - No second notification channel invented, no digest, no quiet hours.
 - No edit of `DECISIONS.md` §A/§B or `docs/SRS.md`.
@@ -141,7 +141,7 @@ class PushSender(Protocol):
              deep_link: str | None, collapse_key: str) -> str | None: ...
 
 class OtpSender(Protocol):
-    def send(self, *, phone: str, code: str) -> None: ...
+    def send(self, *, discord_id: str, code: str) -> None: ...
 
 @dataclass(frozen=True)
 class DeliveryBatch:
@@ -175,7 +175,8 @@ def deliver_pending(connection, *, push: PushSender | None, limit: int = 50,
   honestly rather than claiming exactly-once push.
 - No provider call is made for a row whose recipient is inactive (FR-AUT-07) or has no
   active endpoint; it is marked `EXHAUSTED` with `outcome='NO_ENDPOINT'` — visible, not
-  silently dropped. OTP rows use the roster phone; OTP delivery is Phase 12's caller.
+  silently dropped. OTP rows target the roster Discord ID (FR-ROS-03); OTP delivery is
+  Phase 12's caller.
 - A source change is never rolled back (FR-NOT-04): delivery runs after the domain
   transaction committed; a failure only writes attempts.
 
@@ -206,17 +207,20 @@ def deliver_pending(connection, *, push: PushSender | None, limit: int = 50,
 
 ### 4.4 OTP interface (FR-ROS-03 boundary)
 
-`OtpSender.send(phone, code)` is the only dependency Phase 12 needs. Phase 11 ships:
+`OtpSender.send(discord_id, code)` is the only dependency Phase 12 needs. The recipient is
+the roster Discord ID, never an account or number typed at sign-in (FR-ROS-03). Phase 11 ships:
 
 - the protocol and a `RecordingOtpSender` for tests (never used in production),
-- a `NotificationOtpSender` that stages an `OTP_CODE` notification row when no SMS
-  provider is configured — this keeps sign-in testable without inventing a provider,
-- an explicit `SmsProviderNotConfigured` error for production paths until an SMS provider is
-  configured.
+- a development sender for local runs that records the code instead of sending it,
+- a `DiscordDmOtpSender` that opens a DM channel with the roster Discord ID and sends one
+  message through the bot (reuses the Phase 9 Discord client; no new migration),
+- an explicit `OtpSenderNotConfigured` error for production paths until a Discord DM sender
+  is configured.
 
-The SRS figure names SMS to the roster phone; EIR-04 names FCM push. O11-1 answered: build
-this interface with a development sender now, and the owner supplies the SMS provider before
-go-live. No code invents an SMS vendor.
+The amended FR-ROS-03 says the OTP is a Discord DM from the ASEC bot to the roster Discord ID;
+EIR-04 names FCM push and the Discord OTP DM. O11-1 answered (d): Discord DM, no SMS provider.
+No code invents an SMS vendor, an email fallback or an admin-code fallback. A failed DM is
+recorded and must not be distinguishable from success in the sign-in response.
 
 ### 4.5 Announcement fan-out (FR-NOT-06, FR-REV-10)
 
@@ -246,7 +250,7 @@ def sweep_unfanned_announcements(connection) -> tuple[int, ...]
 ### 4.6 Delivery tick
 
 ```python
-def run_delivery_tick(connection, *, push, sms=None, limit=50) -> DeliveryBatch
+def run_delivery_tick(connection, *, push, otp_sender=None, limit=50) -> DeliveryBatch
 ```
 
 Order: sweep announcements → deliver pending (push for notification rows; OTP rows only
@@ -257,8 +261,8 @@ in-memory queue and is restart-safe.
 ### 4.7 Security
 
 - Push tokens and OTP codes are secrets: never in `repr`, logs, attempt errors, app
-  notification bodies (the code goes only to the SMS provider, not the in-app list), or
-  test fixtures beyond obviously fake values.
+  notification bodies (the code goes only to the OtpSender, i.e. the Discord DM, not the
+  in-app list), or test fixtures beyond obviously fake values.
 - `notification_attempt.error` is sanitized at the boundary: provider status/code only.
 - In-app list is self-only; deep links are opaque ids, not secrets.
 - Phone numbers are masked in logs and never rendered into a notification body sent to a
@@ -325,7 +329,7 @@ schema-constrained (0008 deliberately kept it free text).
 | FR-NOT-06 | fan-out to vertical / AH volunteers | fan-out tests |
 | FR-NOT-07, EIR-04 | push + in-app list + review deep link | FCM/list tests |
 | FR-REV-10 (delivery half; acceptance record in 6) | announcement audience fan-out | fan-out test |
-| FR-ROS-03 (interface) | `OtpSender`, no provider invented | OTP interface test |
+| FR-ROS-03 (interface) | `OtpSender` (development sender + Discord DM sender), no provider invented | OTP interface test |
 | NFR-SEC-01/03 | credentials config-only; self-only list | leak/scope tests |
 | NFR-AUD-03 (reused from 7) | attempts/read rows immutable | audit test |
 
@@ -379,7 +383,7 @@ W4 is gated on the `push` extra being installed and FCM credentials; W1–W3 and
 
 | ID | Question | Options | Recommendation |
 |---|---|---|---|
-| O11-1 | OTP/SMS provider and credentials; resolve EIR-04 (FCM) vs SRS figure (SMS) | **ANSWERED (`docs/OWNER_ANSWERS.md`)**: (c) build the OTP sender interface with a development sender now; OWNER SUPPLIES the SMS provider before go-live | adopted; FR-ROS-03 needs SMS to the roster phone, so the owner starts registration early |
+| O11-1 | OTP delivery channel; resolve EIR-04 (FCM) vs FR-ROS-03 | **ANSWERED (`docs/OWNER_ANSWERS.md`)**: (d) OTP by Discord DM from the ASEC bot to the roster Discord ID; no SMS provider; build the `OtpSender` interface with a development sender and a Discord DM sender | adopted; no provider account or registration is needed; a roster person with no Discord ID cannot sign in (FR-ROS-02) |
 | O11-2 | FCM mode | **ANSWERED (`docs/OWNER_ANSWERS.md`)**: (b) HTTP v1 through an optional `push` extra behind `PushSender`; the legacy HTTP key is not used | decided; signing package confined to one module, core tests run without it |
 | O11-3 | Retry policy: max attempts, backoff base/cap, batch limit | (a) 5 attempts, 5 s base, 5 min cap, 50/batch; (b) owner values | (a), configuration-only |
 | O11-4 | Confirm `VERTICAL` announcement audience = all active members of the vertical | (a) all active members; (b) volunteers only | (a), literal FR-REV-10; confirm |
@@ -389,9 +393,10 @@ W4 is gated on the `push` extra being installed and FCM credentials; W1–W3 and
 
 ## 10. SRS ambiguities carried by this phase
 
-1. **OTP delivery channel** — FR-ROS-03 says SMS to the roster phone; EIR-04 names FCM
-   push. O11-1 answered: both channels — the OTP sender interface with a development sender
-   now, the SMS provider supplied by the owner before go-live. No vendor is invented.
+1. **OTP delivery channel** — resolved by the owner's amendment: FR-ROS-03 and EIR-04 both say
+   the OTP is a Discord DM from the ASEC bot to the roster Discord ID, with FCM only for push.
+   The `OtpSender` interface ships a development sender and a Discord DM sender; no SMS vendor,
+   email fallback or admin-code fallback is invented.
 2. **FR-NOT-06 "push announcements"** — the SRS does not define a separate broadcast
    operation; this plan treats it as the existing accept + fan-out path.
 3. **"Assignee accepted or denied → creator"** — a claim is an acceptance; Phases 7/8
@@ -494,11 +499,13 @@ the suite, no secret in any attempt/row/report.
 - **FR-REV-10** An accepted ANNOUNCEMENT shall be shown to its audience (a Head's
   vertical, or the sender AH's volunteers) and shall not create a task.
 - **FR-ROS-03** Every sign-in to the app shall resolve to exactly one roster person. The
-  person signs in with their institute roll number, and a one-time password (OTP) is sent
-  to the phone number the roster holds for that roll number, never to a number typed at
-  sign-in.
+  person signs in with their institute roll number, and a one-time password (OTP) is sent as
+  a direct message from the ASEC bot to the Discord ID the roster holds for that roll number,
+  never to an account or number typed at sign-in. A roster person with no Discord ID cannot
+  sign in until the Admin supplies one before the festival (FR-ROS-02).
 - **EIR-04** Notification delivery. Push notifications to phones through Firebase Cloud
-  Messaging.
+  Messaging. Sign-in OTPs are delivered as direct messages from the ASEC bot through the
+  Discord interface (EIR-01, FR-ROS-03).
 - **AC-17** Notification fails → Task change committed; failure recorded; retried without
   duplicates.
 - **NFR-SEC-01** All access requires authentication. Discord, model and push credentials

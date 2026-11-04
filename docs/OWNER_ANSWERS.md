@@ -50,7 +50,7 @@ Save as `docs/OWNER_ANSWERS.md`. The owner delegated these decisions to the assi
 
 | ID | Answer | Why |
 | --- | --- | --- |
-| O11-1 | (c) Build the OTP sender interface with a development sender now. **OWNER SUPPLIES** the SMS provider before go-live (in India, bulk SMS usually needs sender and template registration, so start early). FR-ROS-03 needs SMS to the roster phone because the app has no device token before sign-in. | Cannot be chosen without an account and cost decision. |
+| O11-1 | (d) OTP by Discord DM from the ASEC bot to the roster Discord ID; no SMS provider; build the OtpSender interface with a development sender and a Discord DM sender | No provider account or cost decision is needed; the Discord DM uses the existing bot. |
 | O11-2 | (b) FCM HTTP v1 through an optional `push` extra (the signing needs a package the standard library lacks), isolated behind `PushSender`. I believe the legacy FCM HTTP API was shut down in 2024; confirm in the Firebase docs before building. | Legacy is not a safe base. |
 | O11-3 | (a) 5 attempts, 5 s base, 5 min cap, 50 per batch. | Sensible defaults. |
 | O11-4 | (a) The `VERTICAL` audience is all active members of the vertical. | Matches FR-REV-10 for a Head's announcement. |

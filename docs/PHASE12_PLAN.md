@@ -357,7 +357,7 @@ stay as evidence (NFR-AUD-03).
 | Requirement(s) | Where implemented | Test |
 |---|---|---|
 | FR-ROS-01/02 | roster already loaded; no API import/edit flow (operational) | absence/404 test |
-| FR-ROS-03, FR-AUT-07 | OTP to roster phone, sessions, inactive block | auth tests |
+| FR-ROS-03, FR-AUT-07 | OTP DM to roster Discord ID, sessions, inactive block | auth tests |
 | FR-AUT-01/02 | every protected route authenticates and authorizes | route coverage test |
 | FR-AUT-03 | Volunteer cannot assign/review/create | matrix cells |
 | FR-AUT-04 | 12 × 4 matrix, one test per cell | parametrized matrix suite |
@@ -443,8 +443,9 @@ without a matrix classification (test enforces route coverage).
    implements the FR-TSK-06 override and the matrix test records it as an accepted
    exception (flagged).
 3. **Session/OTP values** — the SRS gives none; O12-3 supplies them.
-4. **OTP channel** — FR-ROS-03 says SMS; EIR-04 says FCM; O11-1 decides. Phase 12 uses
-   whichever `OtpSender` is configured.
+4. **OTP channel** — resolved by the owner's amendment: FR-ROS-03 and EIR-04 both say the OTP
+   is a Discord DM from the ASEC bot to the roster Discord ID; no SMS provider exists. Phase 12
+   uses whichever `OtpSender` is configured (development sender or Discord DM sender).
 5. **"Push announcements"** — no separate broadcast operation exists; the matrix cell maps
    to accepting an announcement proposal (Phase 6/11).
 6. **FR-UI-05 "configuration"** — the API exposes key names and non-secret values only;
@@ -517,9 +518,10 @@ clean, no secret in any response/log.
 - **FR-ROS-02** The roster is fixed during the festival. The MVP has no import, sync or
   edit flows, and only Admin can change roster data.
 - **FR-ROS-03** Every sign-in to the app shall resolve to exactly one roster person. The
-  person signs in with their institute roll number, and a one-time password (OTP) is sent
-  to the phone number the roster holds for that roll number, never to a number typed at
-  sign-in.
+  person signs in with their institute roll number, and a one-time password (OTP) is sent as
+  a direct message from the ASEC bot to the Discord ID the roster holds for that roll number,
+  never to an account or number typed at sign-in. A roster person with no Discord ID cannot
+  sign in until the Admin supplies one before the festival (FR-ROS-02).
 - **FR-AUT-01** The backend shall authorize every protected operation using server-side
   identity, role and scope. Hiding a button is not authorization. A direct API call shall
   get the same result as the app.

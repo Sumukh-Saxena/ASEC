@@ -43,7 +43,7 @@ Worked examples:
 | **AI layer** | Two stateless functions: relevance classification and proposal drafting, each returning model + version + prompt/config version. Only helps the backend. An optional third context agent is post-MVP. | Write to the DB; create/assign/change tasks; decide who may do what. |
 | **Backend** | System of record: Discord ingestion, bucketing, orchestration and validation of AI calls, roster, authorization, proposals, tasks, states, history, notifications, the app's API, audit. | Treat AI output or message content as authority. |
 
-High-level design (SRS figures): Discord adapter → bucketer → pipeline orchestrator (attempts, retries, PII masking, schema validation, name resolution) → domain services → API + notification service (FCM push, SMS OTP) → PostgreSQL per the figures (the build currently uses SQLite, see §12). AI models are **self-hosted and light** (Google Colab or local, quantized, one GPU); Colab sessions are time-limited so the MVP run is best effort.
+High-level design (SRS figures): Discord adapter → bucketer → pipeline orchestrator (attempts, retries, PII masking, schema validation, name resolution) → domain services → API + notification service (FCM push, OTP by Discord DM from the ASEC bot) → PostgreSQL per the figures (the build currently uses SQLite, see §12). AI models are **self-hosted and light** (Google Colab or local, quantized, one GPU); Colab sessions are time-limited so the MVP run is best effort.
 
 ---
 
@@ -218,7 +218,7 @@ Repo "ASEC Build Lab": Python 3.12, **no runtime dependencies**, SQLite (WAL, fo
 - 10: model adapter over HTTP, evaluation harness against SRS section 7 targets, model comparison. 11: notification delivery (FCM HTTP v1 via optional extra, OTP sender interface), announcement fan-out. 12: roster loader, OTP sign-in, API (framework in an optional extra), authorization matrix tests, dashboards backend.
 - A deployment and operations phase (13) is recommended in `docs/ASEC_Deployment_Readiness.md` and not yet planned.
 
-**Owner decisions** are recorded in `docs/DECISIONS.md` (Phase 6 and PB items) and `docs/OWNER_ANSWERS.md` (Phases 7-12). Items marked OWNER SUPPLIES need the owner: Discord token (environment only) and test server, labelled evaluation set (at least 300 masked messages), SMS provider for sign-in codes, app deep-link scheme and hosting or TLS arrangement.
+**Owner decisions** are recorded in `docs/DECISIONS.md` (Phase 6 and PB items) and `docs/OWNER_ANSWERS.md` (Phases 7-12). Items marked OWNER SUPPLIES need the owner: Discord token (environment only) and test server, labelled evaluation set (at least 300 masked messages), app deep-link scheme and hosting or TLS arrangement. Sign-in codes need no provider: the OTP is a Discord DM from the ASEC bot to the roster Discord ID (amended FR-ROS-03, O11-1 (d)), so the bot must be able to open a DM channel and send one message.
 
 ---
 
@@ -230,7 +230,7 @@ Repo "ASEC Build Lab": Python 3.12, **no runtime dependencies**, SQLite (WAL, fo
 - **Schema defects:** explicit tasks forced to `people_needed = 1`; a unique rule blocks re-adding a person after a denial; free-text roles and `reports_to`; announcement audience tokens are provisional (all in the Phase 7 schema window).
 - **Security housekeeping:** a Discord bot token exists in `.env` and an older one in git history; reset it and keep the repository private.
 - **Privacy:** consent and notice for volunteers, retention (archive only, no training without consent), and Discord's developer policy must be checked before go-live.
-- **SRS wording to fix (owner edits the SRS):** nonexistent "section 12" reference; roll number "fallback" vs primary credential; assignee-record "cancelled" value; who may cancel (FR-TSK-08 vs FR-TSK-16); Admin status rights; the 30 s target (bucket wait alone is 17-32 s); invalid-proposal handling (FR-PRP-05 vs EIR-03); task type vs responsible vertical; names matched only in the source vertical; the clock for "closed when e + C has passed"; sender role missing from the AI input; availability vs Colab best effort; candidate models too large for one Colab-class GPU; "archived" vs "transfer for training"; FR-TSK-01 creator wording; announcement audience; OTP over SMS missing from the external interfaces.
+- **SRS wording to fix (owner edits the SRS):** nonexistent "section 12" reference; assignee-record "cancelled" value; who may cancel (FR-TSK-08 vs FR-TSK-16); Admin status rights; the 30 s target (bucket wait alone is 17-32 s); invalid-proposal handling (FR-PRP-05 vs EIR-03); task type vs responsible vertical; names matched only in the source vertical; the clock for "closed when e + C has passed"; sender role missing from the AI input; availability vs Colab best effort; candidate models too large for one Colab-class GPU; "archived" vs "transfer for training"; FR-TSK-01 creator wording; announcement audience. Resolved 3 Nov 2026 by owner amendment: the roll number is the sign-in identifier (FR-ROS-03) and the sign-in OTP is a Discord DM from the ASEC bot, not SMS (FR-ROS-03, EIR-04).
 
 ---
 

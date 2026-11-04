@@ -113,7 +113,7 @@ extend them additively but must not silently change names or meanings.
 | Phase 8 | `backend/approvals.py`: `decide_request(connection, request_id, *, actor_person_id, decision, message=None) -> DecisionResult` (first decision wins); `list_pending_approvals(connection, *, actor_person_id) -> tuple[...]` | 12 |
 | Phase 9 | `backend/scheduler.py`: `advance_group_clock(connection, group_id, *, now, mode) -> ClockResult`; `run_pipeline_tick(connection, *, classifiers, generators, now, mode) -> TickResult`; `backend/worker.py`: `run_worker(connection, *, tick, stop_event, interval_seconds) -> None`; `backend/replay.py`: `import_export(connection, path, *, timezone, source)`; `backend/discord_adapter.py`: `DiscordSource` protocol producing `MessageEvent`/`ReactionEvent` | 10, 12 |
 | Phase 10 | `backend/ai/http_client.py`: `HttpModelAdapter` implementing `RelevanceClassifier` **and** `ProposalGenerator`; `backend/evaluation.py`: `load_labelled_set(path)`, `score_relevance`, `score_proposals`, `run_evaluation`, `write_report` | 12 (admin eval views) |
-| Phase 11 | `backend/notification_delivery.py`: `deliver_pending(connection, *, push: PushSender, sms: OtpSender, limit) -> DeliveryBatch`; `list_notifications(connection, *, person_id, unread_only=False)`; `fan_out_announcement(connection, announcement_id)`; protocols `PushSender.send(recipient, title, body, deep_link)`, `OtpSender.send(phone, code)` | 12 |
+| Phase 11 | `backend/notification_delivery.py`: `deliver_pending(connection, *, push: PushSender, otp_sender: OtpSender, limit) -> DeliveryBatch`; `list_notifications(connection, *, person_id, unread_only=False)`; `fan_out_announcement(connection, announcement_id)`; protocols `PushSender.send(recipient, title, body, deep_link)`, `OtpSender.send(discord_id, code)` (DM from the ASEC bot; FR-ROS-03) | 12 |
 | Phase 12 | `backend/auth.py`: `request_otp(connection, *, roll_number, sender) -> None`; `verify_otp(connection, *, roll_number, code) -> Session`; `authenticate(connection, token) -> AuthenticatedPerson`; `backend/api/routes.py` dispatching to the services above | mobile app (out of repo) |
 
 Import direction stays acyclic: domain services never import the API; `review.py` never
@@ -288,7 +288,7 @@ operational work. Phase 0–6 entries are complete and committed.
 | FR-NOT-07 | 11 | push + in-app list |
 | FR-ROS-01 | 12 | roster load (operational, no UI import) |
 | FR-ROS-02 | 12 | fixed roster, Admin-only changes |
-| FR-ROS-03 | 12 | roll number + OTP to roster phone |
+| FR-ROS-03 | 12 | roll number + OTP DM from the bot to the roster Discord ID |
 | FR-AUT-01 | 12 | server-side authorization |
 | FR-AUT-02 | 12 | protected operation list |
 | FR-AUT-03 | 12 | volunteer restrictions |
@@ -427,7 +427,7 @@ it.** Items marked OWNER SUPPLIES remain stop gates and are collected in §7.1.
 | O10-4 | 10 | Which self-hosted models/hardware; hosted models reference-only | Start with the owner's Windows PC (16 GB RAM, NVIDIA 4–8 GB VRAM) running one small model (about 4B) and one 7–8B model through Ollama, and a larger open model of about 14B in a Colab notebook for the quality ceiling. A hosted model (Gemini) only on masked synthetic text, as a baseline. The owner confirms the exact model tags in the Ollama library. | W7 |
 | O10-5 | 10 | Confirm archive-only retention, no training on festival chat | (a) Archive only; no training on festival chat without a consent plan. | none |
 | O10-6 | 10 | Accept/reject the 30 s P95 target given a 17–32 s bucket wait | (c) Keep the 30 s target in code and document that the bucket wait alone is 17–32 s. The owner later edits the SRS to measure from bucket close. | report |
-| O11-1 | 11 | OTP/SMS provider + credentials; resolve FR-ROS-03 SMS vs EIR-04 FCM | (c) Build the OTP sender interface with a development sender now. **OWNER SUPPLIES** the SMS provider before go-live (in India, bulk SMS usually needs sender and template registration, so start early). FR-ROS-03 needs SMS to the roster phone because the app has no device token before sign-in. | W5 |
+| O11-1 | 11 | OTP delivery channel; resolve FR-ROS-03 vs EIR-04 FCM | (d) OTP by Discord DM from the ASEC bot to the roster Discord ID; no SMS provider; build the OtpSender interface with a development sender and a Discord DM sender | W5 |
 | O11-2 | 11 | FCM mode | (b) FCM HTTP v1 through an optional `push` extra (the signing needs a package the standard library lacks), isolated behind `PushSender`. I believe the legacy FCM HTTP API was shut down in 2024; confirm in the Firebase docs before building. | W4 |
 | O11-3 | 11 | Retry policy and batch limit | (a) 5 attempts, 5 s base, 5 min cap, 50 per batch. | W2 |
 | O11-4 | 11 | `VERTICAL` announcement audience = all active members or volunteers only? | (a) The `VERTICAL` audience is all active members of the vertical. | W3 |
@@ -450,7 +450,7 @@ is not marked OWNER SUPPLIES and is not a hard stop gate.
 |---|---|---|---|
 | O9-2 | 9 | Bot token (environment variable only), a test server and channel, Message Content intent enabled in the Discord developer portal; reset the old token first | W5 live smoke only |
 | O10-2 | 10 | Labelled set: ≥ 300 masked messages, ≥ 80 RELEVANT, ≥ 60 hard negatives, sender role, expected proposal for relevant ones; owner confirms the assistant's labelling | W4–W7 production report |
-| O11-1 | 11 | SMS provider account and credentials before go-live (India: sender/template registration) | W5 live OTP only |
+| O11-1 | 11 | Nothing to supply: OTP is a Discord DM from the existing ASEC bot (obsolete: SMS provider account and credentials) | W5 live OTP only |
 | O11-5 | 11 | The app's deep-link scheme | W1 wording tests may ship with an opaque path; real scheme later |
 | O12-6 | 12 | Mobile app repo, contract ownership, TLS/hosting arrangement | before any real client connects |
 
@@ -521,15 +521,15 @@ slice instead.
   `docs/OWNER_ANSWERS.md`: the AI-06 quality targets **do exist** in SRS §7 (recall ≥ 95%,
   precision ≥ 80%, proposal type and assignment mode ≥ 95%, assignee and task type ≥ 90%,
   acceptance ≥ 80%) — an earlier plan statement that none existed was wrong and is
-  corrected in `PHASE10_PLAN.md`; OTP delivery is SMS to the roster phone (FR-ROS-03, with
-  FCM for push, EIR-04) — both channels, not a contradiction; FR-TSK-08 vs FR-TSK-16 is
+  corrected in `PHASE10_PLAN.md`; OTP delivery is a Discord DM from the ASEC bot to the
+  roster Discord ID (FR-ROS-03, with FCM for push, EIR-04) — both channels, not a
+  contradiction; FR-TSK-08 vs FR-TSK-16 is
   settled as creator + Head of the responsible vertical + Admin (O7-4); the Admin work-status
   right is settled as an Admin override (O7-5); roster edits have no API in the MVP (O12-4).
   Still outstanding for the owner: the 30 s P95 target vs a 17–32 s bucket wait (O10-6 keeps
   the target and documents the wait; the owner later edits the SRS to measure from bucket
-  close); FR-UI mobile app out of repo; roll-number sign-in blocked when a roster phone is
-  missing (PB-5 makes phone NOT NULL, which removes the fallback question but not the
-  operational one).
+  close); FR-UI mobile app out of repo; roll-number sign-in blocked when a roster Discord ID
+  is missing (FR-ROS-03 amendment; the schema is unchanged, PB-5 keeps phone NOT NULL).
 - Owner inputs are consolidated in §7 (34 items, O7-1 … O12-7), each with its answer from
   `docs/OWNER_ANSWERS.md`; §7.1 lists the five OWNER SUPPLIES stop gates by phase. Each
   phase plan repeats only its own items, and each execution prompt carries them with the

@@ -481,6 +481,14 @@ class DiscordRestSource:
   (FR-ING-07, BR-09); the adapter never interprets them.
 - Tests use a fake transport/fixture server. A real-server smoke test is a manual,
   owner-run step with a token supplied through the environment, never in the repo.
+- **DM capability for Phase 11 sign-in OTP (amendment, 2026-11-03).** The same bot must be
+  able to open a DM channel with a roster Discord ID and send one message; Phase 11 uses it
+  for the sign-in OTP (FR-ROS-03, EIR-04). This needs no new migration and no new table. A
+  failed DM is recorded (delivery attempt) and must not be distinguishable from success in
+  the sign-in response. Discord's rules on DMing a user who shares no server with the bot
+  are **UNVERIFIED** and must be checked against Discord's developer documentation before
+  Phase 11. No email or admin-code fallback is invented; if one seems necessary, it is an
+  OWNER decision recorded in `docs/OWNER_ANSWERS.md` only.
 
 ### 4.8 Oversize buckets in parts (FR-BKT-11)
 
