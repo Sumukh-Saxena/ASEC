@@ -40,12 +40,12 @@ from backend.db.migrations import apply_migrations
 
 _BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
-# SRS §10.1 declares its own test parameter set (W=10, G=5, M=30, C=3). The
-# service's BucketParams() defaults are the §3.2 production set (W=15, G=5,
-# M=30, C=2). Every §10.1-scoped test pins the §10.1 values explicitly via the
-# _assign helper; tests of the production defaults call assign_messages
-# directly without params.
-_PARAMS_101 = BucketParams(10, 5, 30, 3)
+# SRS §10.1 declares its own test parameter set (W=15, G=5, M=30, C=2), which
+# currently matches the service's BucketParams() production defaults from §3.2.
+# Every §10.1-scoped test pins the §10.1 values explicitly via the _assign
+# helper; tests of the production defaults call assign_messages directly
+# without params.
+_PARAMS_101 = BucketParams(15, 5, 30, 2)
 
 # Configuration keys accepted by load_bucket_params (documented in .env.example).
 _BUCKET_CONFIG_KEYS = (
@@ -249,10 +249,10 @@ def parse(value: str) -> datetime:
     ("times", "expected"),
     [
         ([0, 3, 8], [[0, 3, 8]]),
-        ([0, 10], [[0], [10]]),
-        ([0, 12], [[0], [12]]),
-        ([0, 4, 9, 13], [[0, 4, 9, 13]]),
-        ([0, 9, 14], [[0, 9], [14]]),
+        ([0, 10], [[0, 10]]),
+        ([0, 12], [[0, 12]]),
+        ([0, 4, 8, 12, 16], [[0, 4, 8, 12, 16]]),  # 16 >= W joins on burst
+        ([0, 14, 19], [[0, 14], [19]]),
         (
             [0, 4, 8, 12, 16, 20, 24, 28, 30],
             [[0, 4, 8, 12, 16, 20, 24, 28], [30]],
@@ -281,6 +281,17 @@ def test_srs_101_composition_rows(
     for bucket in _buckets(conn):
         assert bucket["processing_state"] == "OPEN"
         assert bucket["end_event_timestamp"] is None
+    _fk_clean(conn)
+
+
+def test_srs_101_row5_0_17_two_buckets(conn: sqlite3.Connection) -> None:
+    """SRS 10.1 row 5: times 0 and 17 form two buckets (17 >= W, gap 17 >= G)."""
+    _group(conn)
+    _message(conn, 1, 0)
+    _message(conn, 2, 17)
+    _assign(conn)
+    assert _composition(conn) == [[0], [17]]
+    assert len(_buckets(conn)) == 2
     _fk_clean(conn)
 
 
@@ -314,7 +325,7 @@ def test_srs_101_message_after_closure(
     _group(conn)
     _message(conn, 1, 0)
     _assign(conn)
-    mark_stream_progress(conn, group_id=1, event_progress=_iso(13))
+    mark_stream_progress(conn, group_id=1, event_progress=_iso(17))
     assert _state(conn, 1) == "CLOSED"
     _message(conn, 2, 5)
     result = _assign(conn)
@@ -323,7 +334,7 @@ def test_srs_101_message_after_closure(
     composition = _composition(conn)
     assert composition == [[0], [5]]
     bucket = _buckets(conn)[1]
-    # PB-7: the closed bucket's end (10) is after t=5, so no closed bucket
+    # PB-7: the closed bucket's end (15) is after t=5, so no closed bucket
     # qualifies as the one-hop predecessor; the old graph link is gone.
     assert bucket["predecessor_bucket_id"] is None
     assert _state(conn, 2) == "OPEN"
@@ -337,25 +348,26 @@ def test_closure_inclusive_boundary_before_at_after(conn: sqlite3.Connection) ->
     _group(conn)
     _message(conn, 1, 0)
     _assign(conn)
-    mark_stream_progress(conn, group_id=1, event_progress=_iso(12))
+    mark_stream_progress(conn, group_id=1, event_progress=_iso(16))
     assert _state(conn, 1) == "OPEN"
-    mark_stream_progress(conn, group_id=1, event_progress=_iso(13))
+    mark_stream_progress(conn, group_id=1, event_progress=_iso(17))
     assert _state(conn, 1) == "CLOSED"
-    assert _end(conn, 1) == _iso(10)
-    mark_stream_progress(conn, group_id=1, event_progress=_iso(14))
+    assert _end(conn, 1) == _iso(15)
+    mark_stream_progress(conn, group_id=1, event_progress=_iso(18))
     assert _state(conn, 1) == "CLOSED"
 
 
-def test_closure_row9_threshold(conn: sqlite3.Connection) -> None:
+def test_closure_row11_threshold(conn: sqlite3.Connection) -> None:
+    """SRS 10.1 row 11: 0,4,8,12,16 -> end 21, closes at 23 (inclusive)."""
     _group(conn)
-    for mid, seconds in enumerate([0, 4, 9, 13], start=1):
+    for mid, seconds in enumerate([0, 4, 8, 12, 16], start=1):
         _message(conn, mid, seconds)
     _assign(conn)
-    mark_stream_progress(conn, group_id=1, event_progress=_iso(20))
+    mark_stream_progress(conn, group_id=1, event_progress=_iso(22))
     assert _state(conn, 1) == "OPEN"
-    mark_stream_progress(conn, group_id=1, event_progress=_iso(21))
+    mark_stream_progress(conn, group_id=1, event_progress=_iso(23))
     assert _state(conn, 1) == "CLOSED"
-    assert _end(conn, 1) == _iso(18)
+    assert _end(conn, 1) == _iso(21)
 
 
 def test_progress_fails_clearly_on_unusable_persisted_params(
@@ -390,19 +402,19 @@ def test_closure_uses_bucket_persisted_params(conn: sqlite3.Connection) -> None:
     _group(conn)
     _message(conn, 1, 5)
     _assign(conn, params=BucketParams(window_w=20, close_grace_c=3))  # bucket A: e = 5+20 = 25
-    _message(conn, 2, 0)  # earlier than A's start -> late; born L(0) OPEN, e = 10
+    _message(conn, 2, 0)  # earlier than A's start -> late; born L(0) OPEN, e = 15
     _assign(conn)
     buckets = _buckets(conn)
     bucket_late = buckets[0]  # start 0, recorded default parameters
     bucket_custom = buckets[1]  # start 5, recorded window_w=20
     assert json.loads(bucket_custom["parameters_used"])["window_w"] == 20
     mark_stream_progress(conn, group_id=1, event_progress=_iso(12))
-    assert _state(conn, bucket_late["id"]) == "OPEN"  # own e=10, 10+3=13 > 12
+    assert _state(conn, bucket_late["id"]) == "OPEN"  # own e=15, 15+2=17 > 12
     assert _state(conn, bucket_custom["id"]) == "OPEN"
-    result13 = mark_stream_progress(conn, group_id=1, event_progress=_iso(13))
-    assert sorted(result13.closed_bucket_ids) == [bucket_late["id"]]
-    assert _state(conn, bucket_late["id"]) == "CLOSED"  # 13 <= 13 inclusive
-    # 27 is at/behind the caller-default threshold 15+3=18 for bucket A, so a
+    result17 = mark_stream_progress(conn, group_id=1, event_progress=_iso(17))
+    assert sorted(result17.closed_bucket_ids) == [bucket_late["id"]]
+    assert _state(conn, bucket_late["id"]) == "CLOSED"  # 17 <= 17 inclusive
+    # 27 is at/behind the caller-default threshold 15+2=17 for bucket A, so a
     # closure computed from the progress call's parameters would close it here.
     mark_stream_progress(conn, group_id=1, event_progress=_iso(27))
     assert _state(conn, bucket_custom["id"]) == "OPEN"  # own 25+3=28 > 27
@@ -417,11 +429,11 @@ def test_closure_uses_bucket_persisted_params(conn: sqlite3.Connection) -> None:
 @pytest.mark.parametrize(
     ("times", "joins"),
     [
-        ([0, 9], True),  # 9 < W joins
-        ([0, 10], False),  # exactly W never joins
+        ([0, 14], True),  # 14 < W joins
+        ([0, 15], False),  # exactly W never joins (SRS 10.1 row 3)
         ([20, 24], True),  # 4 < W joins
         ([20, 25], True),  # exactly G inside the base window: W branch joins
-        ([0, 9, 14], False),  # exactly G outside the base window never joins
+        ([0, 12, 17], False),  # exactly G outside the base window never joins
         # Exactly M after the start never joins (30 - 0 == M), even though
         # 30 - 28 = 1 < G: the M condition is not part of the OR.
         ([0, 4, 8, 12, 16, 20, 24, 28, 30], False),
@@ -465,28 +477,28 @@ def test_progress_at_boundary_is_late(conn: sqlite3.Connection) -> None:
 
 def test_blocker1_scenario_late_open_then_normal(conn: sqlite3.Connection) -> None:
     """Existing OPEN bucket B(18); progress closes A; late 12 creates OPEN L;
-    normal 25 evaluates against B (current), not L; progress 25 closes L."""
+    normal 25 evaluates against B (current), not L; progress 29 closes L."""
     _group(conn)
     for mid, seconds in enumerate([0, 4, 9, 13, 18], start=1):
         _message(conn, mid, seconds)
     _assign(conn)
     mark_stream_progress(conn, group_id=1, event_progress=_iso(21))
     buckets = _buckets(conn)
-    assert _state(conn, buckets[0]["id"]) == "CLOSED"  # A(0..13), e=18, 18+3<=21
+    assert _state(conn, buckets[0]["id"]) == "CLOSED"  # A(0..13), e=18, 18+2<=21
     assert _state(conn, buckets[1]["id"]) == "OPEN"  # B(18)
     _message(conn, 6, 12)
     result = _assign(conn)
     late_bucket_id = result.assigned[0][1]
     assert result.late_message_ids == (6,)
-    assert _state(conn, late_bucket_id) == "OPEN"  # 12+10+3=25 > 21
+    assert _state(conn, late_bucket_id) == "OPEN"  # e=27, 27+2=29 > 21
     _message(conn, 7, 25)
     result2 = _assign(conn)
     normal_bucket_id = result2.assigned[0][1]
     assert normal_bucket_id != late_bucket_id  # joins B(18), not L(12)
     assert _members(conn, normal_bucket_id) == [5, 7]
-    mark_stream_progress(conn, group_id=1, event_progress=_iso(25))
+    mark_stream_progress(conn, group_id=1, event_progress=_iso(29))
     assert _state(conn, late_bucket_id) == "CLOSED"
-    assert _state(conn, normal_bucket_id) == "OPEN"  # 28+3=31 > 25
+    assert _state(conn, normal_bucket_id) == "OPEN"  # e=33, 33+2=35 > 29
 
 
 def test_equal_start_tie_current_replacement(conn: sqlite3.Connection) -> None:
@@ -497,13 +509,13 @@ def test_equal_start_tie_current_replacement(conn: sqlite3.Connection) -> None:
     _assign(conn)
     mark_stream_progress(conn, group_id=1, event_progress=_iso(12))
     original = _buckets(conn)[0]["id"]
-    assert _state(conn, original) == "OPEN"  # e=20, e+C=23 > 12
+    assert _state(conn, original) == "OPEN"  # e=25, e+C=27 > 12
     _message(conn, 2, 10)
     result = _assign(conn)
     late_bucket = result.assigned[0][1]
     assert result.late_message_ids == (2,)
     assert _flag_late(conn, 2) == 1
-    assert _state(conn, late_bucket) == "OPEN"  # born e=20, 23 > 12
+    assert _state(conn, late_bucket) == "OPEN"  # born e=25, 27 > 12
     assert late_bucket != original
     _message(conn, 3, 13)
     result2 = _assign(conn)
@@ -518,15 +530,15 @@ def test_born_closed_late_bucket(conn: sqlite3.Connection) -> None:
     _group(conn)
     _message(conn, 1, 10)
     _assign(conn)
-    mark_stream_progress(conn, group_id=1, event_progress=_iso(23))
-    assert _state(conn, 1) == "CLOSED"  # e=20, 20+3<=23
+    mark_stream_progress(conn, group_id=1, event_progress=_iso(27))
+    assert _state(conn, 1) == "CLOSED"  # e=25, 25+2<=27
     _message(conn, 2, 10)
     result = _assign(conn)
     born_id = result.assigned[0][1]
     assert born_id in result.born_closed_bucket_ids
     assert _state(conn, born_id) == "CLOSED"
-    assert _end(conn, born_id) == _iso(20)
-    _message(conn, 3, 30)  # normal (30 > 23), cannot join closed buckets
+    assert _end(conn, born_id) == _iso(25)
+    _message(conn, 3, 30)  # normal (30 > 27), cannot join closed buckets
     _assign(conn)
     assert _composition(conn) == [[10], [10], [30]]
     _fk_clean(conn)
@@ -535,12 +547,12 @@ def test_born_closed_late_bucket(conn: sqlite3.Connection) -> None:
 def test_born_open_late_bucket_absorbs_normal(conn: sqlite3.Connection) -> None:
     _group(conn)
     _message(conn, 1, 5)
-    _assign(conn)  # bucket X(5) OPEN, threshold 5+10+3=18
+    _assign(conn)  # bucket X(5) OPEN, e=20, closes at 22
     mark_stream_progress(conn, group_id=1, event_progress=_iso(15))
     assert _state(conn, 1) == "OPEN"
-    _message(conn, 2, 9)  # 9 <= 15 -> late; 9+10+3=22 > 15 -> born OPEN, displaces
+    _message(conn, 2, 9)  # 9 <= 15 -> late; e=24, 24+2=26 > 15 -> born OPEN, displaces
     _assign(conn)
-    _message(conn, 3, 16)  # 16 > 15 normal; 16-9=7 < 10 -> joins the late bucket
+    _message(conn, 3, 16)  # 16 > 15 normal; 16-9=7 < 15 -> joins the late bucket
     result = _assign(conn)
     bucket_id = result.assigned[0][1]
     assert _members(conn, bucket_id) == [2, 3]
@@ -633,10 +645,10 @@ def test_late_predecessor_is_one_hop_to_the_last_closed_bucket(
     _group(conn)
     _message(conn, 1, 10)
     _assign(conn)
-    _message(conn, 2, 20)
+    _message(conn, 2, 26)
     _assign(conn)
     mark_stream_progress(conn, group_id=1, event_progress=_iso(43))
-    # {10}: e=20 (23 limit); {20}: e=30 (33); both closed at progress 43.
+    # {10}: e=25 (closes 27); {26}: e=41 (closes 43); both closed at 43.
     buckets = _buckets(conn)
     bucket_a, bucket_b = buckets[0], buckets[1]
     assert [_state(conn, b["id"]) for b in buckets] == ["CLOSED", "CLOSED"]
@@ -658,7 +670,7 @@ def test_late_predecessor_is_one_hop_to_the_last_closed_bucket(
 def test_normal_buckets_have_no_predecessor(conn: sqlite3.Connection) -> None:
     """PB-7: a bucket that is not late has no link (buckets are not a chain)."""
     _group(conn)
-    seconds = [0, 10, 30, 45, 60, 90]
+    seconds = [0, 15, 30, 45, 60, 90]
     for mid, s in enumerate(seconds, start=1):
         _message(conn, mid, s)
     _assign(conn)
@@ -753,7 +765,7 @@ def test_progress_group_isolation(conn: sqlite3.Connection) -> None:
     _message(conn, 1, 0, group_id=1)
     _message(conn, 2, 0, group_id=2)
     _assign(conn)
-    mark_stream_progress(conn, group_id=1, event_progress=_iso(13))
+    mark_stream_progress(conn, group_id=1, event_progress=_iso(17))
     assert _state(conn, 1) == "CLOSED"
     assert _state(conn, 2) == "OPEN"
 
@@ -764,7 +776,7 @@ def test_progress_group_isolation(conn: sqlite3.Connection) -> None:
 def test_repeat_assignment_idempotent(conn: sqlite3.Connection) -> None:
     _group(conn)
     _message(conn, 1, 0)
-    _message(conn, 2, 12)
+    _message(conn, 2, 20)
     _assign(conn)
     result = _assign(conn)
     assert result.assigned == ()
@@ -780,10 +792,10 @@ def test_parameters_used_recorded(conn: sqlite3.Connection) -> None:
 
     stored = json.loads(_buckets(conn)[0]["parameters_used"])
     assert stored == {
-        "window_w": 10,
+        "window_w": 15,
         "burst_gap_g": 5,
         "max_duration_m": 30,
-        "close_grace_c": 3,
+        "close_grace_c": 2,
     }
 
 
@@ -896,11 +908,11 @@ def test_receipt_fallback_orders_by_effective_time(
 ) -> None:
     """FR-BKT-03 is applied to the selected effective time, not the raw column."""
     _group(conn)
-    _message(conn, 1, 12)  # EVENT time 12
+    _message(conn, 1, 20)  # EVENT time 20
     _message(conn, 2, None, received_at=_iso(0))  # RECEIPT time 0
     _assign(conn)
     starts = [bucket["start_event_timestamp"] for bucket in _buckets(conn)]
-    assert starts == [_iso(0), _iso(12)]
+    assert starts == [_iso(0), _iso(20)]
     assert _members(conn, _buckets(conn)[0]["id"]) == [2]
     assert _members(conn, _buckets(conn)[1]["id"]) == [1]
 
@@ -945,10 +957,10 @@ def test_injected_failure_mid_transaction_rolls_back(
 ) -> None:
     _group(conn)
     _message(conn, 1, 0)
-    _message(conn, 2, 12)
+    _message(conn, 2, 20)
     conn.execute("UPDATE source_message SET event_timestamp = ? WHERE id = 1", (_iso(0),))
     proxy = _FailProxy(conn, "INSERT INTO bucket (", 2)
-    # 0 and 12 form two buckets under the §10.1 parameter set; the failure is
+    # 0 and 20 form two buckets under the §10.1 parameter set; the failure is
     # injected on the second bucket insert.
     with pytest.raises(sqlite3.IntegrityError):
         assign_messages(proxy, group_id=1, params=_PARAMS_101)
@@ -988,7 +1000,7 @@ def test_real_lock_contention_assign_blocked(
     apply_migrations(holder)
     _group(holder)
     _message(holder, 1, 0)
-    _message(holder, 2, 12)
+    _message(holder, 2, 20)
     holder.execute("BEGIN IMMEDIATE")  # holds the single write lock
     holder.execute("INSERT INTO source_group (id, discord_channel_id) VALUES (9, 'h')")
     worker = connect(db_path)
@@ -998,7 +1010,7 @@ def test_real_lock_contention_assign_blocked(
     holder.close()
     result = _assign(worker)
     assert result.late_message_ids == ()
-    assert _composition(worker) == [[0], [12]]
+    assert _composition(worker) == [[0], [20]]
     _fk_clean(worker)
     worker.close()
     holder.close()
@@ -1014,13 +1026,13 @@ def test_progress_and_assignment_concurrent_group_isolation(
     _assign(conn)
     # sequential calls on separate connections stay consistent; the
     # transaction boundaries serialize writers.
-    result = mark_stream_progress(conn, group_id=2, event_progress=_iso(13))
+    result = mark_stream_progress(conn, group_id=2, event_progress=_iso(17))
     assert result.accepted
-    assert result.closed_bucket_ids == (2,)  # g2 bucket: e=10, e+C=13 <= P=13
-    _message(conn, 3, 13, group_id=2)
+    assert result.closed_bucket_ids == (2,)  # g2 bucket: e=15, e+C=17 <= P=17
+    _message(conn, 3, 15, group_id=2)
     late = _assign(conn, group_id=2)
     assert late.late_message_ids == (3,)
-    assert _pred(conn, late.assigned[0][1]) == 2  # linked to the closed bucket
+    assert _pred(conn, late.assigned[0][1]) == 2  # closed end 15 <= t=15
     assert _state(conn, 2) == "CLOSED"  # inclusive e + C <= P closure stands
     assert _state(conn, 1) == "OPEN"  # group 1's bucket unaffected throughout
     _fk_clean(conn)
