@@ -119,7 +119,7 @@ hours, build the HTTP API or sign-in flow (12), add a provider, or edit requirem
 | **PB-5** | `person.phone` is NOT NULL, `role` is `Admin/Head/AH/Volunteer`, `reports_to` is a person FK. |
 | **OD-REV-5** | The audience follows the sender's role, already stored in 0018. |
 | **Phase 7 contract** | `stage_notification` + dedupe keys are the only insert path; `visible_tasks` is the only task filter. |
-| **Retention** | Archive only; attempts and read markers are immutable evidence (NFR-AUD-03). |
+| **Retention** | Retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first; attempts and read markers are immutable evidence (NFR-AUD-03). |
 
 ---
 

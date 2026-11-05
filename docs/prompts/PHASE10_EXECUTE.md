@@ -37,7 +37,7 @@ commit.**
 1. `AGENTS.md`.
 2. `docs/SRS.md` §3.3–§3.5 AI functions, §4/EIR-03 call contract, §5 AI-01..08, §6.4
    performance, §6.5 security, AC-21.
-3. `docs/DECISIONS.md` §B — relevance retrofit (opaque handles), retention (archive only),
+3. `docs/DECISIONS.md` §B — relevance retrofit (opaque handles), retention (retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first),
    PB-2 (time zone for replay).
 4. `docs/ROADMAP.md` §2 (contracts), §7 (owner inputs).
 5. `docs/PHASE10_PLAN.md` — the approved plan (§4 design, §5 exact SQL, §6 traceability,
@@ -116,7 +116,7 @@ dependency, select or deploy a model, or touch delivery/API/pipeline phases.
 | ID | What it fixes for you |
 |---|---|
 | **Relevance retrofit** | Requests carry opaque handles, no Discord ids, masked content (Phase 7 `ai_context.py`/`masking.py`). The guard re-uses, never replaces, it. |
-| **Retention and training** | Archive only; no training corpus from festival chat. Evaluation reads persisted data. |
+| **Retention and training** | Retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first. Evaluation reads persisted data; no training corpus from festival chat. |
 | **PB-2** | Replay timestamps are localized by the importer; the harness reads stored values, it does not reinterpret them. |
 | **Eligibility across verticals** | Labelled cases carry the sender's role; eligibility is policy, not a model decision. |
 | **Phase 9 contract** | Attempt input artifacts (0013/0014) are JSON; a parts array is already possible without a schema change. |
@@ -162,10 +162,10 @@ O10-4 Which self-hosted models/hardware are available; confirm hosted models are
       (Gemini) only on masked synthetic text, as a baseline. The owner confirms the exact
       model tags in the Ollama library.
 
-O10-5 Confirm archive-only retention, no training on festival chat.
-      Options: (a) archive only; (b) other.
+O10-5 Confirm retention policy, no training on festival chat.
+      Options: (a) retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first; (b) other.
       Plan recommendation: (a).
-      OWNER ANSWER: (a) Archive only; no training on festival chat without a consent plan.
+      OWNER ANSWER: (a) Retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first; no training on festival chat without a consent plan.
 
 O10-6 Accept or reject the 30 s message-to-proposal P95 target given a 17-32 s bucket wait.
       Options: (a) relax the target; (b) shorten M/C; (c) keep and document.

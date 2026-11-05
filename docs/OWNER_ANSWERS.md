@@ -62,8 +62,26 @@ Save as `docs/OWNER_ANSWERS.md`. The owner delegated these decisions to the assi
 | --- | --- | --- |
 | O12-1 | (b) A mature framework (FastAPI-class) in an optional `api` extra, confined to `backend/api`, domain services framework-free. The Phase 12 plan needs a rewrite of its server section at phase start. | Authentication, routing and validation are where hand-rolled code goes wrong. |
 | O12-2 | Approve the 12-endpoint surface, subject to a quick review at phase start. | Contract with the app. |
-| O12-3 | (a) 12 h sessions, 5 min OTP, 5 attempts, 3 requests per 15 min. | Reasonable defaults. |
+| O12-3 | (a) 7-day sessions (owner), 5 min OTP, 5 attempts, 3 requests per 15 minutes. | Reasonable defaults; the 7-day session is the owner's stated value. |
 | O12-4 | (a) No roster API in the MVP; the roster is loaded by script before the festival. | FR-ROS-02. |
 | O12-5 | Approve the FR-AUT-04 matrix as the baseline **including the cells added by O7-3, O7-5 and O8-1**. | Keeps one consistent matrix. |
 | O12-6 | **OWNER SUPPLIES** the app repo, contract ownership and the TLS or hosting arrangement. | Outside the repo. |
-| O12-7 | (a) Keep sessions, denials and attempts as evidence; archive only. | Consistent with retention. |
+| O12-7 | (a) Keep sessions, denials and attempts until the retention date, then delete via the DR-07 retention procedure; this supersedes archive-only. | Retaining evidence through the festival matches DR-07; deletion after the retention date is required by DR-07. |
+| O12-8 | Bucket parameters W=15, G=5, M=30, C=2 final. | Matches SRS §10.1 and the implementation. |
+| O12-9 | Worker interval 2 s. | Matches O9-3; keeps polling load bounded. |
+| O12-10 | Reactions (FR-ING-07) deferred and pinned. | REST polling cannot see reaction removals; recorded in KNOWN_GAPS. |
+| O12-11 | Worker supervision via a Windows scheduled task plus manual check. | Simple MVP operation; no service manager needed. |
+| O12-12 | Time-zone fixed-offset fallback accepted. | Avoids a tz database dependency for the MVP. |
+| O12-13 | OTP-lockout accepted as an MVP assumption (single server, everyone in it, DMs open). | Matches FR-ROS-03's stated MVP assumption. |
+| O12-14 | Retention per DR-07. | Retain through the festival plus 3 months, then delete via the retention procedure. |
+
+## OPEN OWNER decisions
+
+These are not decided. The wording below is proposed for the owner.
+
+| ID | Proposed wording | Why |
+| --- | --- | --- |
+| OD-1 | Bucket close to proposal-ready notification, P95 <= [X] s, X set after benchmark; bucket wait is 17 to 32 s. | The latency target needs a measured value, not a guess. |
+| OD-2 | [N]% for ingestion and the API during event hours, model host best effort (NFR-REL-05). | Availability must be stated without promising the model host. |
+| OD-3 | NFR-REL-08 backups every [N] minutes to a location off the host, restore tested before the festival. | Backup frequency and off-host storage are owner choices. |
+| OD-4 | Eligible sender definition (a) role held in the group's vertical, or (b) any active AH or Head. | The SRS does not fix which definition the MVP uses. |

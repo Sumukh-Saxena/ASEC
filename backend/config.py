@@ -200,3 +200,92 @@ def _positive_int(config: Config, name: str, default: int) -> int:
     if value < 1:
         raise ConfigError(f"{name} must be positive, got {raw!r}")
     return value
+
+
+def _bounded_int(
+    config: Config, name: str, default: int, *, minimum: int, maximum: int
+) -> int:
+    value = _positive_int(config, name, default)
+    if value < minimum or value > maximum:
+        raise ConfigError(
+            f"{name} must be between {minimum} and {maximum}, got {value}"
+        )
+    return value
+
+
+#: Discord REST polling (plan §4.7, O9-1). The token is read with
+#: :meth:`Config.require` at the call site and never stored in these settings.
+DISCORD_BOT_TOKEN_KEY = "DISCORD_BOT_TOKEN"
+
+DEFAULT_DISCORD_PAGE_LIMIT = 100
+DEFAULT_DISCORD_TIMEOUT_SECONDS = 10.0
+DEFAULT_DISCORD_MAX_ATTEMPTS = 4
+DEFAULT_DISCORD_BACKOFF_BASE_SECONDS = 1.0
+DEFAULT_DISCORD_BACKOFF_MAX_SECONDS = 30.0
+DEFAULT_DISCORD_POLL_INTERVAL_SECONDS = 2.0
+DEFAULT_DISCORD_MAX_PAGES = 10
+
+DISCORD_PAGE_LIMIT_KEY = "DISCORD_PAGE_LIMIT"
+DISCORD_TIMEOUT_KEY = "DISCORD_TIMEOUT_SECONDS"
+DISCORD_MAX_ATTEMPTS_KEY = "DISCORD_MAX_ATTEMPTS"
+DISCORD_BACKOFF_BASE_KEY = "DISCORD_BACKOFF_BASE_SECONDS"
+DISCORD_BACKOFF_MAX_KEY = "DISCORD_BACKOFF_MAX_SECONDS"
+DISCORD_POLL_INTERVAL_KEY = "DISCORD_POLL_INTERVAL_SECONDS"
+DISCORD_MAX_PAGES_KEY = "DISCORD_MAX_PAGES"
+
+
+@dataclass(frozen=True)
+class DiscordSettings:
+    """Validated Discord REST polling limits (plan §4.7).
+
+    Discord caps ``limit`` at 100. Every value is configuration; an invalid
+    value raises :class:`ConfigError` instead of being clamped silently.
+    """
+
+    page_limit: int = DEFAULT_DISCORD_PAGE_LIMIT
+    timeout_seconds: float = DEFAULT_DISCORD_TIMEOUT_SECONDS
+    max_attempts: int = DEFAULT_DISCORD_MAX_ATTEMPTS
+    backoff_base_seconds: float = DEFAULT_DISCORD_BACKOFF_BASE_SECONDS
+    backoff_max_seconds: float = DEFAULT_DISCORD_BACKOFF_MAX_SECONDS
+    poll_interval_seconds: float = DEFAULT_DISCORD_POLL_INTERVAL_SECONDS
+    max_pages: int = DEFAULT_DISCORD_MAX_PAGES
+
+
+def load_discord_settings(config: Config) -> DiscordSettings:
+    """Build :class:`DiscordSettings` from optional configuration overrides."""
+    defaults = DiscordSettings()
+    timeout = _positive_float(
+        config, DISCORD_TIMEOUT_KEY, defaults.timeout_seconds
+    )
+    backoff_base = _positive_float(
+        config, DISCORD_BACKOFF_BASE_KEY, defaults.backoff_base_seconds
+    )
+    backoff_max = _positive_float(
+        config, DISCORD_BACKOFF_MAX_KEY, defaults.backoff_max_seconds
+    )
+    if backoff_max < backoff_base:
+        raise ConfigError(
+            f"{DISCORD_BACKOFF_MAX_KEY} must be at least {DISCORD_BACKOFF_BASE_KEY}"
+            f" ({backoff_base}), got {backoff_max}"
+        )
+    return DiscordSettings(
+        page_limit=_bounded_int(
+            config,
+            DISCORD_PAGE_LIMIT_KEY,
+            defaults.page_limit,
+            minimum=1,
+            maximum=100,
+        ),
+        timeout_seconds=timeout,
+        max_attempts=_positive_int(
+            config, DISCORD_MAX_ATTEMPTS_KEY, defaults.max_attempts
+        ),
+        backoff_base_seconds=backoff_base,
+        backoff_max_seconds=backoff_max,
+        poll_interval_seconds=_positive_float(
+            config, DISCORD_POLL_INTERVAL_KEY, defaults.poll_interval_seconds
+        ),
+        max_pages=_positive_int(
+            config, DISCORD_MAX_PAGES_KEY, defaults.max_pages
+        ),
+    )

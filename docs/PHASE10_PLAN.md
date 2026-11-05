@@ -70,7 +70,7 @@ Real facts verified in the repository today:
 ### 2.2 Non-goals
 
 - No prompt tuning that changes the request contract or hides messages; no truncation.
-- No training or fine-tuning; retention stays archive-only (`DECISIONS` §B).
+- No training or fine-tuning; data is retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first (`DECISIONS` §B).
 - No hosted-model dependency in the product path; hosted models are comparison only.
 - No automatic model selection, no automatic deployment, no self-modifying prompts.
 - No delivery (11), API (12), scheduler changes (9).
@@ -247,8 +247,8 @@ def write_report(run, path) -> None
 
 - Labelled sets contain real chat: keep them outside the repository or redact/synthesize;
   never commit them. Masking runs before any hosted or self-hosted call (NFR-SEC-04/05).
-- Archive-only retention: evaluation reads persisted data; no training corpus is built
-  (owner may change this, O10-5).
+- Retention: retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first. Evaluation reads persisted data; no training corpus is built
+  (O10-5 answered).
 - Reports contain aggregate metrics and case ids; if a case excerpt is included it is
   masked and owner-approved.
 - No secret in a report, a case file, a fixture or a log.
@@ -380,7 +380,7 @@ marks synthetic runs as non-production.
 | O10-2 | Supply/approve the labelled evaluation set and minimum size; confirm who labels | (a) owner labels the sample group chat; (b) delegate to a named human | (a); agents must not invent labels |
 | O10-3 | ~~Approve accuracy/recall thresholds for AI-06 "meets the targets" (SRS gives none)~~ **ANSWERED 2026-10-29 (`docs/OWNER_ANSWERS.md`)**: use the SRS §7 targets — recall ≥ 95%, precision ≥ 80%, proposal type and assignment mode ≥ 95% each, assignee and task type ≥ 90% each, acceptance ≥ 80% — and the final model choice is the smallest model meeting them | decided; no new numbers | The earlier plan claim that no accuracy targets exist was wrong; §7 has the table |
 | O10-4 | Approve which self-hosted models/hardware are available; confirm hosted models are reference-only | list + approval | owner supplies; no hosted dependency in the product path |
-| O10-5 | Confirm archive-only retention and that no training uses festival chat | (a) archive only; (b) other | (a), already the default |
+| O10-5 | Confirm retention policy and that no training uses festival chat | (a) retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first; (b) other | (a), per O10-5 |
 | O10-6 | Accept or reject the 30 s P95 target given the 17–32 s bucket wait | (a) relax the target; (b) shorten M/C; (c) keep and document | (c) for the MVP report; owner decides the SRS correction |
 
 ---
@@ -399,7 +399,7 @@ marks synthetic runs as non-production.
    harness cannot infer it.
 5. **Candidate model sizes** — DECISIONS §D notes the named candidates may not fit one
    Colab-class GPU; the benchmark records reality rather than assuming the list is final.
-6. **Evaluation data retention** — archive-only default; using real messages as a
+6. **Evaluation data retention** — retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first; using real messages as a
    labelled set is a privacy decision the owner makes.
 
 ---

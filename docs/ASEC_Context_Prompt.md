@@ -83,7 +83,7 @@ Configurable parameters (production values, §3.2): **W = 15 s** base window, **
 - Computed end `e = min(s + M, max(s + W, ℓ + G))`; closed when `e + C` has passed.
 - Same composition whatever the arrival order for messages arriving within the grace of each other (FR-BKT-06). Late message after closure: stored, new bucket linked to the earlier one, earlier bucket unchanged (FR-BKT-08).
 - Never truncate: oversize buckets are processed in parts. Bucket states: OPEN, CLOSED, PROCESSED, FAILED, AWAITING_RECOVERY.
-- **Test parameters for §10.1 only** are W=10, G=5, M=30, C=3 (this is a separate test set, not a conflict with the production values).
+- **Test parameters for §10.1 only** are W=15, G=5, M=30, C=2 (this is a separate test set, not a conflict with the production values).
 
 ### 4.3 Relevance (FR-REL)
 - Runs on every closed bucket, whole bucket as context, one decision per message (including volunteers and unknown senders, kept as evaluation data).
@@ -206,16 +206,18 @@ Discord is the only MVP source and probably the only staging ground · volunteer
 
 ---
 
-## 11. Build status (as of 29 Oct 2026)
+## 11. Build status (as of 5 Nov 2026)
+
+Status: Phase 9 in progress. C5 (Discord adapter) is done; W8, W9 and W7 are next. Retention is per DR-07; sessions are 7 days.
 
 Repo "ASEC Build Lab": Python 3.12, **no runtime dependencies**, SQLite (WAL, foreign keys on), versioned SQL migrations **0001-0015** with checksums, pytest/ruff/mypy, GitHub CI. **1016 tests pass**, ruff and mypy clean. Coding agents work under `AGENTS.md` and `docs/RULES.md`: read the SRS first; tests first with RED evidence; mutation checks on critical rules; no commits, pushes or staging by agents; never read `.env` or session logs. The owner commits at each green checkpoint.
 
 **Done and committed (Phases 0-6):** foundation and masking; database and migration runner; data layer and normalized ingestion with replay; bucket formation, lifecycle and orchestration; relevance service; proposal generation and validation (opaque mention handles, markup rewriting, backend assignee resolution, raw response retention); proposal review service (edits as immutable revisions, gated accept creating exactly one task or announcement, hidden pending cross-vertical tasks with approval request and recipients, authorization denial recording, notification rows staged, Admin-only evaluation export).
 
-**Planned, not built (Phases 7-12, docs in `docs/PHASE7_PLAN.md` ... `PHASE12_PLAN.md`, roadmap in `docs/ROADMAP.md`, execute prompts in `docs/prompts/`):**
+**Phases 7-8 are done; Phase 9 is in progress (C5 done, W8/W9/W7 next). Phases 10-12 are planned, not built (docs in `docs/PHASE7_PLAN.md` ... `PHASE12_PLAN.md`, roadmap in `docs/ROADMAP.md`, execute prompts in `docs/prompts/`):**
 - 7: relevance retrofit (opaque handles), eligibility default ON, one schema window (task table rebuild, roster integrity, structured announcement audience), task lifecycle (claims, agreement, work status, cancellation, edits, history, roll-ups) with one filter that hides pending tasks.
 - 8: cross-vertical approval decisions. 9: per-group clock and scheduler (arrival-order fix), timestamp fallback, replay importer with sender mapping, operational foundations (logging, startup checks, health, alerts), Discord adapter (REST polling), oversized bucket parts.
-- 10: model adapter over HTTP, evaluation harness against SRS section 7 targets, model comparison. 11: notification delivery (FCM HTTP v1 via optional extra, OTP sender interface), announcement fan-out. 12: roster loader, OTP sign-in, API (framework in an optional extra), authorization matrix tests, dashboards backend.
+- 10: model adapter over HTTP, evaluation harness against SRS section 7 targets, model comparison. 11: notification delivery (FCM HTTP v1 via optional extra, OTP sender interface), announcement fan-out. 12: roster loader, OTP sign-in with 7-day sessions, API (framework in an optional extra), authorization matrix tests, dashboards backend.
 - A deployment and operations phase (13) is recommended in `docs/ASEC_Deployment_Readiness.md` and not yet planned.
 
 **Owner decisions** are recorded in `docs/DECISIONS.md` (Phase 6 and PB items) and `docs/OWNER_ANSWERS.md` (Phases 7-12). Items marked OWNER SUPPLIES need the owner: Discord token (environment only) and test server, labelled evaluation set (at least 300 masked messages), app deep-link scheme and hosting or TLS arrangement. Sign-in codes need no provider: the OTP is a Discord DM from the ASEC bot to the roster Discord ID (amended FR-ROS-03, O11-1 (d)), so the bot must be able to open a DM channel and send one message.
@@ -229,7 +231,7 @@ Repo "ASEC Build Lab": Python 3.12, **no runtime dependencies**, SQLite (WAL, fo
 - **Relevance stage** still sends real Discord IDs; the Phase 7 retrofit fixes it. Do not send real festival chat to any model before that.
 - **Schema defects:** explicit tasks forced to `people_needed = 1`; a unique rule blocks re-adding a person after a denial; free-text roles and `reports_to`; announcement audience tokens are provisional (all in the Phase 7 schema window).
 - **Security housekeeping:** a Discord bot token exists in `.env` and an older one in git history; reset it and keep the repository private.
-- **Privacy:** consent and notice for volunteers, retention (archive only, no training without consent), and Discord's developer policy must be checked before go-live.
+- **Privacy:** consent and notice for volunteers, retention per DR-07 (festival plus 3 months, then the DR-07 retention procedure; no training without consent), and Discord's developer policy must be checked before go-live.
 - **SRS wording to fix (owner edits the SRS):** nonexistent "section 12" reference; assignee-record "cancelled" value; who may cancel (FR-TSK-08 vs FR-TSK-16); Admin status rights; the 30 s target (bucket wait alone is 17-32 s); invalid-proposal handling (FR-PRP-05 vs EIR-03); task type vs responsible vertical; names matched only in the source vertical; the clock for "closed when e + C has passed"; sender role missing from the AI input; availability vs Colab best effort; candidate models too large for one Colab-class GPU; "archived" vs "transfer for training"; FR-TSK-01 creator wording; announcement audience. Resolved 3 Nov 2026 by owner amendment: the roll number is the sign-in identifier (FR-ROS-03) and the sign-in OTP is a Discord DM from the ASEC bot, not SMS (FR-ROS-03, EIR-04).
 
 ---

@@ -1,7 +1,7 @@
 # ASEC Planning Progress (resume anchor)
 
-Status: **planning complete (2026-10-29)**. Planning-only session. No code, migrations,
-tests or commits. This file is the first thing a resumed session must read after
+Status: **Phase 9 in progress (2026-11-05)**. C5 done; W8, W9 and W7 next. Retention per
+DR-07; sessions are 7 days. This file is the first thing a resumed session must read after
 `AGENTS.md`.
 
 ## Resume rules
@@ -57,10 +57,9 @@ tests or commits. This file is the first thing a resumed session must read after
   `docs/PHASE8_PLAN.md` (447 → 564 lines). Nothing staged or committed.
 
 ## Next
-- Commit the Phase 8 tree at the green checkpoint, then start Phase 9 with
-  `docs/prompts/PHASE9_EXECUTE.md` (PB-1/PB-2/PB-7). Do not start Phase 9 in the W5
-  session. Optional: a test-typing cleanup slice (89 pre-existing mypy errors in tests);
-  never blocking.
+- Phase 9 is in progress: C5 is done; W8, W9 and W7 are next in
+  `docs/prompts/PHASE9_EXECUTE.md`. Optional: a test-typing cleanup slice (89 pre-existing
+  mypy errors in tests); never blocking.
 
 ## Document order (do not reorder)
 1. ROADMAP (done) → 2. PHASE7 (done) → 3. PHASE8 (done) → 4. PHASE9 (done) → 5. PHASE10
@@ -76,11 +75,11 @@ tests or commits. This file is the first thing a resumed session must read after
 - Phase 9 (O9-1..O9-6): Discord intake (REST polling recommended); token/test guild; worker
   defaults; replay export schema; clock seed/mode; part sizes.
 - Phase 10 (O10-1..O10-6): wire contract; labelled set and labelling; accuracy thresholds
-  for AI-06; models/hardware; archive-only retention; 30 s P95 acceptance.
+  for AI-06; models/hardware; retention per DR-07; 30 s P95 acceptance.
 - Phase 11 (O11-1..O11-5): OTP delivery channel (settled: Discord DM from the ASEC bot, no
   SMS provider) vs EIR-04 FCM; FCM mode; retry defaults; vertical audience; deep-link scheme.
-- Phase 12 (O12-1..O12-7): HTTP framework; route surface; session/OTP values; roster-edit
-  gap; FR-AUT matrix approval; mobile app/TLS; retention.
+- Phase 12 (O12-1..O12-7): HTTP framework; route surface; 7-day sessions and OTP values;
+  roster-edit gap; FR-AUT matrix approval; mobile app/TLS; retention per DR-07.
 
 ## Writing conventions
 - Plans follow PHASE6_PLAN structure: 1 baseline, 2 scope/non-goals, 3 reuse, 4 design,

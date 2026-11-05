@@ -118,7 +118,7 @@ The Reviewer is not a role. The reviewer of a proposal is the AH or Head who sen
 
 ### 2.4 Operating context and assumptions
 
-- Discord is the only source for the MVP and probably the only staging environment.
+- Discord is the only source for the MVP. A dry run on a separate Discord server, with the real group structure and roster, shall be completed before the festival.
 - The roster is loaded before the festival and never changes during it.
 - Planned scale: about 12 groups, each similar to the sample group (about 940 messages over the festival; busiest 10 minutes about 37 messages).
 - Chat is informal, fragmentary Hinglish: Hindi in Roman script mixed with English.
@@ -159,7 +159,7 @@ All requirements are MVP unless marked [Post-MVP].
 - **FR-ING-04** Ingestion shall be idempotent. The same message delivered twice shall produce one record.
 - **FR-ING-05** Every valid message shall be stored on receipt, before and regardless of relevance processing. A later failure shall not lose it.
 - **FR-ING-06** Reply and reference links shall be preserved as supplied.
-- **FR-ING-07** Reactions (additions and removals: reactor, emoji, time) shall be stored as evidence only attached to the message. In the MVP they shall have no effect on any task, assignment or acceptance.
+- **FR-ING-07** Reactions (additions and removals: reactor, emoji, time) shall be stored as evidence only attached to the message. In the MVP they shall have no effect on any task, assignment or acceptance. In the MVP, reaction polling is deferred (owner decision); this requirement is not met until a later release. See docs/KNOWN_GAPS.md.
 - **FR-ING-08** The system shall be able to ingest an exported chat history through the same path as live messages, for replay and testing only. Exports that lack second-level timestamps, message IDs or reactions give indicative results only.
 - **FR-ING-09** Each message shall be mapped to its group and to that group’s vertical. A message from a group with no vertical shall be stored and flagged UNMAPPED, and shall produce no proposals.
 - **FR-ING-10** The sender of each message shall be looked up in the roster by Discord ID. A sender not in the roster shall be flagged UNKNOWN_SENDER.
@@ -242,7 +242,7 @@ Figure 5 shows the order of calls from a Discord message to the proposal-ready n
 - **FR-REV-05** Accepting shall create exactly one task or announcement. Two simultaneous accepts, or a repeated accept, shall produce one.
 - **FR-REV-06** Accepting shall be blocked while any assignee is unresolved or flagged, or a required placeholder is unfilled. For an OPEN task the people needed shall be a positive number or UNLIMITED.
 - **FR-REV-07** Rejecting shall keep the proposal, its revisions and the rejection record. A rejected proposal is never regenerated or reconsidered automatically.
-- **FR-REV-08** Rejected and edited proposals shall be usable as labelled data for model evaluation.
+- **FR-REV-08** Rejected and edited proposals shall be usable as labelled data for model evaluation. Evaluation data to be kept beyond the retention date shall be exported masked, with the consent of the people concerned, before that date.
 - **FR-REV-09** For each proposal the system shall record which fields the reviewer changed.
 - **FR-REV-10** An accepted ANNOUNCEMENT shall be shown to its audience (a Head’s vertical, or the sender AH’s volunteers) and shall not create a task.
 
@@ -278,7 +278,7 @@ Figure 6 shows the review states of FR-REV-01.
 - **FR-TSK-13** The system shall enforce the work-status transitions in FR-TSK-06 and the agreement transitions AWAITING → ACCEPTED or DENIED.
 - **FR-TSK-14** An AI component shall never create, assign, reassign, change the status of, complete, correct or merge a task.
 - **FR-TSK-15** Tasks shall never be merged because of similar wording, a shared bucket or a shared episode.
-- **FR-TSK-16** The creator, the Head of the responsible vertical, and Admin may edit or reassign a task. Assignees are notified of changes.
+- **FR-TSK-16** The creator, a Head of the responsible vertical, and Admin may edit or reassign a task. Assignees are notified of changes.
 
 **[Figure 7 image: Task and assignee record state model]**
 
@@ -288,7 +288,7 @@ Figure 6 shows the review states of FR-REV-01.
 
 - **FR-XV-01** A task is CROSS_VERTICAL when its responsible vertical differs from its source vertical. The reviewer sets this during review (FR-REV-03).
 - **FR-XV-02** A Head’s cross-vertical task goes live as soon as it is accepted. The Head of the responsible vertical shall be notified.
-- **FR-XV-03** An AH’s cross-vertical task, when accepted, shall be created with Approval = PENDING and shall not be visible to volunteers. A request, with an optional message from the requester, shall be sent to every AH and the Head of the responsible vertical.
+- **FR-XV-03** An AH’s cross-vertical task, when accepted, shall be created with Approval = PENDING and shall not be visible to volunteers. A request, with an optional message from the requester, shall be sent to every AH and every Head of the responsible vertical.
 - **FR-XV-04** Any one of those people may approve or deny the request, with an optional message. The first decision wins. Later attempts see the decision and change nothing.
 - **FR-XV-05** On approval the task goes live to the responsible vertical’s volunteers according to its assignment mode, and the requester is notified. On denial the task never goes live, the requester is notified with the message, and the task and decision are kept.
 - **FR-XV-06** Requests, decisions and messages shall be recorded in the task history with the actor’s role and vertical.
@@ -311,9 +311,9 @@ Figure 8 shows how an AH’s cross-vertical request is approved or denied (FR-XV
 | Assignee accepted or denied | The creator |
 | Volunteer marked their work completed | The creator |
 | Task edited, reassigned or cancelled | The affected assignees |
-| Cross-vertical request | All AHs and the Head of the responsible vertical |
+| Cross-vertical request | All AHs and Heads of the responsible vertical |
 | Cross-vertical decision | The requester |
-| Head’s cross-vertical task created | The Head of the responsible vertical |
+| Head’s cross-vertical task created | A Head of the responsible vertical |
 | Announcement | Its audience |
 
 - **FR-NOT-02** In the MVP there is one notification per proposal, with no batching. [Batching is Post-MVP, FR-PM-06.]
@@ -334,7 +334,7 @@ Figure 8 shows how an AH’s cross-vertical request is approved or denied (FR-XV
 - **FR-AUT-04** The matrix below is the baseline. It shall be approved by the project owner before production, and each cell shall have an automated test.
 - **FR-AUT-05** Authorization uses the person’s current role. History keeps the role and vertical in force at the time of each action.
 - **FR-AUT-06** Unauthorized attempts shall be rejected and recorded.
-- **FR-AUT-07** A person referenced by any record shall not be hard-deleted. Deactivation shall block sign-in and new assignment while keeping attribution.
+- **FR-AUT-07** A person referenced by any record shall not be hard-deleted. Deactivation shall block sign-in and new assignment while keeping attribution. Exception: the retention procedure (DR-07).
 - **FR-AUT-08** A message’s content shall never grant authority. Authority comes only from the authorization model.
 
 | Operation | Admin | Head | AH | Volunteer |
@@ -361,6 +361,7 @@ Figure 8 shows how an AH’s cross-vertical request is approved or denied (FR-XV
 - **FR-UI-05** Admin view: pipeline backlog (count and age of the oldest bucket), processing attempts, model results, configuration.
 - **FR-UI-06** The review screen shall show AI-inferred and unverified values as unconfirmed, and placeholders clearly.
 - **FR-UI-07** The app contains no authority logic. All decisions are made by the backend.
+- **FR-UI-08** [Optional] A web dashboard shall provide the AH, Head and Admin dashboards (FR-UI-03, FR-UI-04, FR-UI-05) in a browser, using the same backend API as the mobile app.
 
 ### 3.11 Post-MVP requirements
 
@@ -405,12 +406,12 @@ Figure 9 shows the main records and how they relate.
 ### 4.2 Integrity rules
 
 - **DR-01** Records shall be connected by enforced references, so a task traces back to its proposal, generating attempt, bucket and source messages, and forward again. No orphans.
-- **DR-02** Deleting or deactivating a person, group or vertical shall not delete or detach records that reference it.
+- **DR-02** Deleting or deactivating a person, group or vertical shall not delete or detach records that reference it. Exception: the retention procedure (DR-07).
 - **DR-03** Derived data (classifications, proposals, task fields) never replaces source content.
 - **DR-04** Unknown, missing, empty and explicitly negative values shall be distinguishable.
 - **DR-05** A record shall not show as processed, accepted or confirmed unless the operation completed.
 - **DR-06** Any index or store derived from the data shall hold references to authoritative records and be rebuildable from them.
-- **DR-07** Source content, model outputs and audit history shall be retained through the festival and its post-event review, then archived.
+- **DR-07** Source messages (content, raw metadata, mentions and reactions), the masked AI input copies, AI outputs, processing and audit logs, proposals, tasks, announcements, notifications, history and roster contact details (phone number, Discord ID, roll number) shall be retained through the festival and for 3 months after the date the Admin marks the festival as ended. After that date, a retention procedure run by the Admin shall delete them, including all backups and log files, and record that it ran.
 
 ## 5. External Interfaces
 
@@ -482,6 +483,7 @@ Figure 10 shows one AI call, from masking to retry or permanent failure.
   - (c) an approval request (FR-XV-03) shows the approver the task description and the requester’s note, not the source chat.
 - **NFR-SEC-04** Messages contain personal data such as names, phone numbers and ID details. Before any AI call, phone numbers, email addresses and government-ID-like numbers shall be masked. The originals stay in the backend only.
 - **NFR-SEC-05** The AI models are self-hosted, on Google Colab or a local machine for the small MVP run. Colab is Google-operated infrastructure, so text sent there is masked (NFR-SEC-04) exactly as for any hosted service.
+- **NFR-SEC-06** All communication between the app and the backend shall use HTTPS. An OTP shall expire after 5 minutes and allow at most 5 attempts. OTP requests and sign-in attempts shall be rate limited per person and per source address. A signed-in session shall expire 7 days after sign-in. Deactivating a person (FR-AUT-07) shall revoke their sessions immediately. OTP codes shall never be written to logs.
 
 ### 6.6 Maintainability
 
@@ -496,12 +498,13 @@ Figure 10 shows one AI call, from masking to retry or permanent failure.
 - **AI-02** AI output is advisory. It shall never be written directly to authoritative state.
 - **AI-03** Human edits shall be stored separately from the model’s original values.
 - **AI-04** Each AI function is evaluated separately, then the whole pipeline end to end.
-- **AI-05** A representative labelled evaluation set shall exist before production, built from real festival messages in Hinglish and romanized Hindi, and including the sender’s role. The sample group chat is the starting corpus.
+- **AI-05** A representative labelled evaluation set shall exist before production, built from real festival messages in Hinglish and romanized Hindi, and including the sender’s role. The sample group chat is the starting corpus. Evaluation data to be kept beyond the retention date shall be exported masked, with the consent of the people concerned, before that date.
   - The relevance set shall include hard negatives: long irrelevant messages, jokes about tasks, past-tense or status reports (“only 3 people have come”), banter, and chatter that mentions work without requesting it.
   - The proposal set shall cover: explicit assignment to one person and to several, an open call with and without a number, a same-vertical task, a cross-vertical task, an announcement, a message with two tasks, an assignment followed by an ambiguous reply or reaction, and a name list that depends on the preceding message.
 - **AI-06** Candidate models shall be compared on the same data, recording accuracy on Hinglish, latency, throughput, memory, cost and data handling. The smallest model that meets the targets is preferred. The MVP run uses self-hosted models on Google Colab or a local machine, so candidates shall be small enough to run on one GPU of that kind, quantized if needed. Hosted models stay in the comparison as a reference only.
 - **AI-07** The system shall track the reviewer correction rate per proposal across model versions.
 - **AI-08** End-to-end evaluation shall compare the actionable items the system finds with those a person finds by reading the same period. It shall also report review burden: proposals per reviewer per day and the share rejected.
+- **AI-09** Measured quality shall be reported with a 95% confidence interval. The lower bound shall meet the target, or the owner shall accept the interval in writing.
 
 Targets (latency targets are in section 6.4)
 
@@ -541,19 +544,21 @@ Targets (latency targets are in section 6.4)
 
 ### 10.1 Bucket test cases
 
-Parameters: W = 10, G = 5, M = 30, C = 3. Times are in seconds.
+Parameters: W = 15, G = 5, M = 30, C = 2. Times are in seconds.
 
 | Message times | Expected |
 |---|---|
 | 0, 3, 8 | One bucket |
-| 0, 10 | Two buckets (exactly W, gap not under G) |
-| 0, 12 | Two buckets |
-| 0, 4, 9, 13 | One bucket (13 joins on the burst rule) |
-| 0, 9, 14 | Two buckets (gap exactly 5) |
+| 0, 10 | One bucket (10 < W) |
+| 0, 15 | Two buckets (exactly W, gap not under G) |
+| 0, 12 | One bucket |
+| 0, 17 | Two buckets |
+| 0, 4, 8, 12, 16 | One bucket (16 joins on the burst rule) |
+| 0, 12, 17 | Two buckets (gap exactly G, outside the base window) |
 | 0, 4, 8, 12, 16, 20, 24, 28, 30 | The message at 30 starts a new bucket |
 | Every 4 s from 0 to 60 | Bucket 1 holds 0 to 28; bucket 2 holds 32 to 60 |
-| One message at 0 | Closes at 13 (end 10, plus grace 3) |
-| 0, 4, 9, 13 | Closes at 21 (end 18, plus grace 3) |
+| One message at 0 | Closes at 17 (end 15, plus grace 2) |
+| 0, 4, 8, 12, 16 | Closes at 23 (end 21, plus grace 2) |
 | Two groups interleaved | Two independent buckets |
 | Same set in any arrival order within grace | Identical buckets |
 | Duplicate delivery | One message |
@@ -602,9 +607,9 @@ The MVP is accepted when:
 - Evaluation on real festival data is completed and recorded.
 - The AI targets in section 7 are met.
 
-## Appendix A — Candidate models (informative, not mandated)
+## Appendix A — Candidate models (informative, under consideration, not mandated)
 
-To be compared as AI-06 requires.
+To be compared as AI-06 requires. No model is selected. Candidates that cannot run on one GPU of the MVP host are reference points only.
 
 - Hosted: Claude Haiku 5.5 for relevance and Claude Sonnet 5.5 for proposals, and a comparable pair from another provider.
 - Self-hosted: Sarvam-30B or Sarvam-105B, Qwen3.6-35B-A3B, and Nanda-10B (relevance).

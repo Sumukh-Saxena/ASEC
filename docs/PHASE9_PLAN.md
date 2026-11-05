@@ -654,10 +654,11 @@ Mutation list:
 | W4 | `replay.py` + 0021 + deterministic replay clock | C4 |
 | W5 | `discord_adapter.py` (behind O9-1) + fake transport | C5 |
 | W6 | bucket parts (relevance + proposals) | C6 |
+| W8 | owner-added: poll-bounded clock, live orchestration, `run-live` command, `ASEC_DB_PATH` refusal, hash report, system/bot message filter (types 0 and 19 only), aggregated EMPTY_CONTENT alert | C8 |
+| W9 | owner-added: logging setup with rotating file and redaction, tick-failure frames, replace runtime asserts, SQLite busy retry, `FESTIVAL_END_DATE` and `RETENTION_MONTHS` (default 3) configuration only, report of development defaults | C9 |
 | W7 | mutations, audits, DoD, §15 record | final |
 
-W5 is blocked until the owner chooses the adapter approach (O9-1) and supplies a token
-for manual verification; the rest of Phase 9 can finish without it.
+W5 is complete. W7 follows W9.
 
 ---
 

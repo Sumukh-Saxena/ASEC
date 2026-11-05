@@ -138,7 +138,7 @@ dependencies, edit the SRS or DECISIONS, or change any requirement.
 | **OD-REV-1** | Accept materializes the entity in the accept transaction; Phase 7 adds only the volunteer lifecycle. |
 | **OD-REV-5 / PB-6** | Audience token mapping (sender role, not accepting Admin). |
 | **OD-REV-6** | `task.creator_id` = primary message sender; the accepting Admin is the history actor. |
-| **Retention and training** | Archive only; no training corpus. |
+| **Retention and training** | Retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first. No training corpus. |
 
 Nothing here may be reinterpreted. If the code and a decision disagree, the decision wins
 and the discrepancy is reported.

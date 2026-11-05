@@ -179,7 +179,7 @@ Not migrated: Phase 8 uses existing `approval_request`/`approval_recipient`/
    decision.
 9. **Evaluation data is real personal data.** Labelled sets stay out of the repository or
    are synthetic/redacted; masking applies before any hosted or self-hosted call; the
-   archive-only retention default (`DECISIONS` §B) governs training use.
+   the retention policy (`DECISIONS` §B: retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first) governs training use.
 10. **Migration numbering collisions.** Numbers 0016–0024 are reserved here; a phase that
     needs another migration appends 0025+ and updates this table before writing it.
 11. **Test typing debt.** `mypy` covers `backend` only; 89 pre-existing errors in tests are
@@ -425,7 +425,7 @@ it.** Items marked OWNER SUPPLIES remain stop gates and are collected in §7.1.
 | O10-2 | 10 | Supply/approve the labelled evaluation set, location, labeller, minimum size | **OWNER SUPPLIES** the labelling work: at least 300 masked messages from the sample, including at least 80 RELEVANT and at least 60 hard negatives (jokes, status reports, banter), each with the sender's role and, for relevant ones, the expected proposal. The assistant helps label; the owner confirms. | W4–W7 |
 | O10-3 | 10 | Accuracy/recall thresholds for AI-06 and the final model choice | Use the SRS section 7 targets: relevance recall at least 95% and precision at least 80%; proposal type and assignment mode at least 95% each; assignee and task type at least 90% each; proposal acceptance at least 80%. **The plan is wrong that none exist.** | W7 |
 | O10-4 | 10 | Which self-hosted models/hardware; hosted models reference-only | Start with the owner's Windows PC (16 GB RAM, NVIDIA 4–8 GB VRAM) running one small model (about 4B) and one 7–8B model through Ollama, and a larger open model of about 14B in a Colab notebook for the quality ceiling. A hosted model (Gemini) only on masked synthetic text, as a baseline. The owner confirms the exact model tags in the Ollama library. | W7 |
-| O10-5 | 10 | Confirm archive-only retention, no training on festival chat | (a) Archive only; no training on festival chat without a consent plan. | none |
+| O10-5 | 10 | Confirm retention policy, no training on festival chat | (a) Retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first; no training on festival chat without a consent plan. | none |
 | O10-6 | 10 | Accept/reject the 30 s P95 target given a 17–32 s bucket wait | (c) Keep the 30 s target in code and document that the bucket wait alone is 17–32 s. The owner later edits the SRS to measure from bucket close. | report |
 | O11-1 | 11 | OTP delivery channel; resolve FR-ROS-03 vs EIR-04 FCM | (d) OTP by Discord DM from the ASEC bot to the roster Discord ID; no SMS provider; build the OtpSender interface with a development sender and a Discord DM sender | W5 |
 | O11-2 | 11 | FCM mode | (b) FCM HTTP v1 through an optional `push` extra (the signing needs a package the standard library lacks), isolated behind `PushSender`. I believe the legacy FCM HTTP API was shut down in 2024; confirm in the Firebase docs before building. | W4 |
@@ -434,11 +434,11 @@ it.** Items marked OWNER SUPPLIES remain stop gates and are collected in §7.1.
 | O11-5 | 11 | Deep-link scheme for the mobile app (out of repo) | **OWNER SUPPLIES** the app's deep-link scheme later; use an opaque path until then. | W1 |
 | O12-1 | 12 | HTTP framework | (b) A mature framework (FastAPI-class) in an optional `api` extra, confined to `backend/api`, domain services framework-free. The Phase 12 plan needs a rewrite of its server section at phase start. | W2 |
 | O12-2 | 12 | Approve the minimum route surface as the mobile contract | Approve the 12-endpoint surface, subject to a quick review at phase start. | W3 |
-| O12-3 | 12 | Session lifetime, OTP expiry, attempts, rate limits | (a) 12 h sessions, 5 min OTP, 5 attempts, 3 requests per 15 min. | W1 |
+| O12-3 | 12 | Session lifetime, OTP expiry, attempts, rate limits | (a) 7-day sessions, 5 min OTP, 5 attempts, 3 requests per 15 minutes. | W1 |
 | O12-4 | 12 | Confirm roster changes have no API in the MVP | (a) No roster API in the MVP; the roster is loaded by script before the festival. | W3 |
 | O12-5 | 12 | Approve the FR-AUT-04 matrix as the production baseline | Approve the FR-AUT-04 matrix as the baseline **including the cells added by O7-3, O7-5 and O8-1**. | W5 |
 | O12-6 | 12 | Mobile app repo/contract ownership, TLS/hosting | **OWNER SUPPLIES** the app repo, contract ownership and the TLS or hosting arrangement. | client connection |
-| O12-7 | 12 | Retention for sessions/denials/attempts | (a) Keep sessions, denials and attempts as evidence; archive only. | none |
+| O12-7 | 12 | Retention for sessions/denials/attempts | (a) Keep sessions, denials and attempts until the retention date, then delete via the DR-07 retention procedure; this supersedes archive-only. | none |
 
 ### 7.1 OWNER SUPPLIES items (stop gates, one table)
 
@@ -535,3 +535,24 @@ slice instead.
   phase plan repeats only its own items, and each execution prompt carries them with the
   answer filled in.
 - Migration numbering 0016–0024 is stable and disjoint; Phase 8 adds no migration.
+
+---
+
+## 11. Phase 13 and Phase 14 stubs
+
+### Phase 13 — deployment and operations (stub)
+
+- Windows scheduled-task supervision.
+- Backups and a restore test.
+- Alert delivery.
+- HTTPS reachability.
+- Staging dry run on a separate Discord server.
+- Log files without message content.
+- The DR-07 retention procedure, with a dry run, backup coverage and a reminder alert.
+
+### Phase 14 — clients (stub)
+
+- Native mobile app plus optional web dashboard, in `app/` and `web/` folders of this repo.
+- API contract file frozen at the end of Phase 12.
+
+**OWNER decisions:** the app technology and the first platform are not chosen.

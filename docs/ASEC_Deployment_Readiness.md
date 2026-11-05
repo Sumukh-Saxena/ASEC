@@ -2,6 +2,8 @@
 
 Scope: what could go wrong when ASEC runs for real at the festival. Repo checked: ASEC_Build_Lab_6.zip (HEAD with planning docs; 1016 tests pass). Each finding is tagged **[repo]** (I verified it in the code), **[plan]** (it is in or missing from the plans), **[reasoned]** (follows from how the system works), or **[verify]** (depends on an outside fact I could not check; confirm it yourself). I am not a lawyer; the legal items are flags, not advice.
 
+Status (2026-11-05): Phase 9 C5 is done; W8, W9 and W7 are next. Retention is per DR-07; sessions are 7 days.
+
 ## 1. Verdict
 
 The core logic is careful and well tested, but **nothing yet exists that lets it run unattended for days**: no entry point that runs the pipeline, no logging, no health or alerting, no backups, no packaging or process supervision, no database location setting, and no deployment phase in the roadmap. Phases 7–12 build features; none of them builds operations. The biggest deployment risks are operational and legal, not algorithmic.
@@ -60,7 +62,7 @@ The core logic is careful and well tested, but **nothing yet exists that lets it
 2. **Shadow mode (2–3 days before the event):** connect to one real group, let the pipeline produce proposals, and let reviewers see them, but create no tasks and send no push except to the reviewer. Compare against what the AHs actually did. Measure recall and the reviewer correction rate against the SRS targets.
 3. **Canary:** enable full behaviour for one vertical for a day.
 4. **Event days:** staffed monitoring (one person owns alerts), a printed runbook, and a manual fallback (AHs assign by chat as before).
-5. **After:** archive, do not train; delete or anonymize according to the retention decision.
+5. **After:** do not train; delete via the DR-07 retention procedure (festival plus 3 months).
 
 ## 6. Proposed Phase 13: deployment and operations
 

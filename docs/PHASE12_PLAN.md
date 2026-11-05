@@ -123,7 +123,7 @@ def revoke_session(connection, token: str, *, now: str | None = None) -> bool
 - `verify_otp` uses `hmac.compare_digest`, rejects expired/consumed/exhausted codes,
   increments `attempts` even on failure, and on success creates a session:
   `secrets.token_urlsafe(32)` returned once, `SHA-256` hash stored. Session lifetime is
-  configuration (proposal: 12 h; O12-3).
+  configuration (7 days; O12-3).
 - `authenticate` hashes the bearer token, requires an unexpired, unrevoked session and an
   active person; it returns the current role and verticals, never a role supplied by the
   client (FR-AUT-05).
@@ -347,8 +347,8 @@ CREATE INDEX ix_auth_attempt_roll ON auth_attempt (roll_number_hash, attempted_a
 ```
 
 No table is altered; `person` already carries the roll number, phone, role and active
-flag. Rows are never deleted by the application; expired sessions and consumed challenges
-stay as evidence (NFR-AUD-03).
+flag. Rows are never deleted by the application, except by the DR-07 retention procedure;
+expired sessions and consumed challenges stay as evidence (NFR-AUD-03).
 
 ---
 
@@ -427,11 +427,11 @@ without a matrix classification (test enforces route coverage).
 |---|---|---|---|
 | O12-1 | HTTP framework | **ANSWERED (`docs/OWNER_ANSWERS.md`): (b) a mature framework (FastAPI-class) in an optional `api` extra, confined to `backend/api`, domain services framework-free** | decided; §4.2 is marked "rewrite at phase start" and must be rewritten before W2 |
 | O12-2 | Approve the minimum route surface (§4.3) as the mobile contract | approve / amend | approve; it mirrors existing services |
-| O12-3 | Session lifetime, OTP expiry, attempts, rate limits | (a) 12 h, 5 min, 5, 3/15 min; (b) owner values | (a), configuration-only |
+| O12-3 | Session lifetime, OTP expiry, attempts, rate limits | (a) 7-day sessions (owner), 5 min OTP, 5 attempts, 3 requests per 15 minutes; (b) owner values | (a), configuration-only |
 | O12-4 | Roster changes have no API in the MVP; Admin changes are operational | (a) confirm; (b) add an Admin endpoint | (a), FR-ROS-02; adding a route needs a new requirement |
 | O12-5 | Approve the FR-AUT-04 matrix as the production baseline | approve / amend cells | approve before production; tests already encode it |
 | O12-6 | Mobile app repo/contract ownership, TLS/hosting arrangement | owner supplies | needed before any real client connects |
-| O12-7 | Retention rules for sessions/denials/attempts | (a) keep as evidence, archive per DR-07; (b) other | (a), consistent with the archive-only default |
+| O12-7 | Retention rules for sessions/denials/attempts | (a) keep until the retention date, then delete via the DR-07 retention procedure; this supersedes archive-only; (b) other | (a), retention per DR-07 |
 
 ---
 

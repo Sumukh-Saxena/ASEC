@@ -28,7 +28,7 @@ Put this file at `docs/DECISIONS.md`. Dated 25 Oct 2026. The owner delegated the
 | PB-7 | Limit `predecessor_bucket_id` to late buckets (the SRS only asks for that link) and drop the fallback chain. Do inside the PB-1 work. | Avoids buckets being read as conversations. |
 | Relevance retrofit | **Approved**: relevance requests get opaque handles and the same markup rewriting as Phase 5; no real Discord ID leaves the backend. Do before any live data or hosted model. | EIR-03 and NFR-SEC-04; consistency between the two AI stages. |
 | Eligibility across verticals | Default **ON**: an AH or Head's message produces a proposal only if the sender belongs to the group's vertical. Heads-and-AHs-only groups stay unmapped until a design for them exists. | AH authority is limited to their own vertical. |
-| Retention and training | Default: **archive only**; do not use festival chat for model training until a consent decision exists. This one is the owner's to change. | Privacy and consent; the SRS says "archived", not "training". |
+| Retention and training | Default: **archive only** (superseded by DR-07); do not use festival chat for model training until a consent decision exists. This one is the owner's to change. | Privacy and consent; the SRS says "archived", not "training". |
 
 ## C. Order of work
 

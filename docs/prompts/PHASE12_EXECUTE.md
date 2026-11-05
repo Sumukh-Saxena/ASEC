@@ -142,10 +142,10 @@ O12-2 Approve the minimum route surface (plan §4.3) as the mobile contract.
       start.
 
 O12-3 Session lifetime, OTP expiry, attempts, rate limits.
-      Options: (a) 12 h session, 5 min OTP, 5 verify attempts, 3 requests / 15 min;
+      Options: (a) 7-day sessions, 5 min OTP, 5 verify attempts, 3 requests / 15 min;
       (b) owner values.
       Plan recommendation: (a), configuration-only. Needed before W1.
-      OWNER ANSWER: (a) 12 h sessions, 5 min OTP, 5 attempts, 3 requests per 15 min.
+      OWNER ANSWER: (a) 7-day sessions, 5 min OTP, 5 attempts, 3 requests per 15 minutes.
 
 O12-4 Confirm roster changes have no API in the MVP; Admin changes are operational.
       Options: (a) confirm; (b) add an Admin endpoint.
@@ -169,7 +169,7 @@ O12-6 Mobile app repo/contract ownership and TLS/hosting arrangement.
 O12-7 Retention for sessions/denials/attempts.
       Options: (a) keep as evidence, archive per DR-07; (b) other.
       Plan recommendation: (a).
-      OWNER ANSWER: (a) Keep sessions, denials and attempts as evidence; archive only.
+      OWNER ANSWER: (a) Keep sessions, denials and attempts until the retention date, then delete via the DR-07 retention procedure; this supersedes archive-only.
 ```
 
 Unanswered items that a workstream needs are a stop, not a guess.

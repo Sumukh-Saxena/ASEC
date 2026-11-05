@@ -116,7 +116,7 @@ push/OTP (11), HTTP API or auth (12), Phase 7 task semantics, or edit requiremen
 | **PB-7** | `predecessor_bucket_id` only for late buckets; drop the fallback chain. |
 | **PB-4** | SQLite stays (WAL, `BEGIN IMMEDIATE`, one backend host). |
 | **Phase 7 contract** | Requests handed to AI carry handles only; Phase 9 must not add a raw Discord id to a request. |
-| **Retention** | Archive only. |
+| **Retention** | Retained per DR-07, then deleted; training only with consent, and any evaluation data kept beyond the retention date must be exported masked first. |
 | **DM note (Phase 11 OTP, amendment 2026-11-03)** | The same bot must be able to open a DM channel with a roster Discord ID and send one message (used for the sign-in OTP in Phase 11, FR-ROS-03/EIR-04). No new migration is added for this. A failed DM is recorded and must not be distinguishable from success in the sign-in response. Discord's rules on DMing a user who shares no server with the bot are **UNVERIFIED**; check them against Discord's developer docs before Phase 11. Do not invent an email or admin-code fallback; if one seems needed, list it as an OWNER decision in `docs/OWNER_ANSWERS.md` only. |
 
 ---
@@ -181,11 +181,12 @@ Unanswered items that a workstream needs are a stop, not a guess.
 | W4 | `replay.py` + 0021: JSONL import through `ingest_message`, timezone, idempotent re-import, batch counts, replay clock. | C4 |
 | W5 | `discord_adapter.py`: protocol + stdlib REST source, cursor from the DB, 429/5xx backoff, redaction, reactions as evidence. | C5 |
 | W6 | Bucket parts for relevance and proposals; attempt artifact `parts` array; coverage asserted. | C6 |
+| W8 | owner-added: poll-bounded clock, live orchestration, `run-live` command, `ASEC_DB_PATH` refusal, hash report, system/bot message filter (types 0 and 19 only), aggregated EMPTY_CONTENT alert. | C8 |
+| W9 | owner-added: logging setup with rotating file and redaction, tick-failure frames, replace runtime asserts, SQLite busy retry, `FESTIVAL_END_DATE` and `RETENTION_MONTHS` (default 3) configuration only, report of development defaults. | C9 |
 | W7 | Mutation battery (ten, plan §7), audits, DoD battery, §15. | final |
 
-Checkpoint green = full `pytest` green + ruff/mypy clean + tree runnable. W5 is gated by
-O9-1/O9-2 and may be deferred to the end; everything else can finish without it. A
-half-applied migration window is never left behind.
+Checkpoint green = full `pytest` green + ruff/mypy clean + tree runnable. W5 is complete.
+W7 follows W9. A half-applied migration window is never left behind.
 
 Cut-off safety: each checkpoint must leave a green full suite, because the session may end
 there.
