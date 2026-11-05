@@ -22,6 +22,10 @@ logger = logging.getLogger("asec.alerts")
 #: cause when this happens for a whole page).
 EMPTY_CONTENT_RULE = "EMPTY_CONTENT"
 
+#: Rule name for a group whose live poll or ingestion keeps failing; the clock
+#: for that group is held until a poll succeeds again (W8a).
+POLL_FAILURE_RULE = "POLL_FAILURE"
+
 
 @dataclass(frozen=True)
 class Alert:

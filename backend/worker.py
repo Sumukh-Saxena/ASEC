@@ -28,11 +28,12 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+from backend.alerts import POLL_FAILURE_RULE, Alert, AlertSender
 from backend.bucketing import (
     AssignmentResult,
     BucketParams,
@@ -44,9 +45,12 @@ from backend.clock import (
     ClockModeError,
     ClockResult,
     advance_group_clock,
+    read_group_clock,
 )
-from backend.config import PartSettings
+from backend.config import DEFAULT_POLL_SAFETY_MARGIN_SECONDS, PartSettings
 from backend.db.connection import transaction
+from backend.discord_adapter import DiscordSource, read_cursor
+from backend.ingest import ingest_message
 from backend.orchestration import run_bucketing_pass
 from backend.proposals import ProposalGenerator, run_proposal_pass
 from backend.relevance import RelevanceClassifier, run_relevance_pass
@@ -58,6 +62,10 @@ logger = logging.getLogger(__name__)
 #: receipt to the tick's clock boundary that authorized assignment.
 INGESTION_DELAY_METRIC = "ingestion delay"
 BUCKET_DELAY_METRIC = "bucket delay"
+
+#: Consecutive failed polls for one group before an alert is raised (W8a).
+#: The first failure is logged as a retry; repeated failures need an operator.
+POLL_ALERT_AFTER_FAILURES = 2
 
 
 class StopEvent(Protocol):
@@ -85,6 +93,35 @@ class TickResult:
     proposals: object | None = None
 
 
+@dataclass(frozen=True)
+class GroupPollResult:
+    """One group's live poll outcome (W8a).
+
+    ``stored`` counts messages newly committed by :func:`ingest_message`;
+    ``duplicates`` are redeliveries that wrote nothing. ``polled_at`` is the
+    instant recorded only after the whole page committed, and stays ``None``
+    on failure or for a REPLAY group that the live driver must not touch.
+    """
+
+    group_id: int
+    channel_id: str
+    fetched: int = 0
+    stored: int = 0
+    duplicates: int = 0
+    failed: bool = False
+    skipped_replay: bool = False
+    polled_at: str | None = None
+
+
+@dataclass(frozen=True)
+class LiveTickResult:
+    """What one live poll-and-tick cycle did (W8a)."""
+
+    polls: tuple[GroupPollResult, ...]
+    tick: TickResult
+    consecutive_failures: Mapping[int, int]
+
+
 def run_pipeline_tick(
     connection: sqlite3.Connection,
     *,
@@ -94,6 +131,8 @@ def run_pipeline_tick(
     generator: ProposalGenerator | None = None,
     params: BucketParams | None = None,
     parts: PartSettings | None = None,
+    poll_instants: Mapping[int, str] | None = None,
+    poll_safety_margin_seconds: float = DEFAULT_POLL_SAFETY_MARGIN_SECONDS,
 ) -> TickResult:
     """Run one durable pipeline tick; ``now`` is the injected clock instant.
 
@@ -104,16 +143,43 @@ def run_pipeline_tick(
     the worker loop records the failure and retries on the next tick.
     ``parts`` carries the validated O9-6 per-call part sizes (FR-BKT-11); when
     omitted the passes use their owner-approved defaults.
+
+    ``poll_instants`` switches the tick to the live W8a rule: a group whose
+    poll did not succeed has no bound and its clock is left unchanged, while a
+    polled group advances only to ``min(now, polled_at - margin)``. REPLAY
+    groups are never advanced by a live poll. With the default ``None`` the
+    caller is the authority and every group advances to ``now`` as before.
     """
     if clock_mode not in CLOCK_MODES:
         raise ClockModeError(
             f"unknown clock mode {clock_mode!r}; expected one of"
             f" {', '.join(CLOCK_MODES)}"
         )
-    groups = tuple(
-        advance_group_clock(connection, group_id, now=now, mode=clock_mode)
-        for group_id in _group_ids(connection)
-    )
+    if poll_safety_margin_seconds < 0:
+        raise ValueError(
+            "poll_safety_margin_seconds must be non-negative,"
+            f" got {poll_safety_margin_seconds!r}"
+        )
+    if poll_instants is None:
+        groups = tuple(
+            advance_group_clock(connection, group_id, now=now, mode=clock_mode)
+            for group_id in _group_ids(connection)
+        )
+    else:
+        bounds = _poll_bounded_instants(
+            connection,
+            now=now,
+            poll_instants=poll_instants,
+            margin_seconds=poll_safety_margin_seconds,
+            clock_mode=clock_mode,
+        )
+        groups = tuple(
+            advance_group_clock(
+                connection, group_id, now=bounds[group_id], mode=clock_mode
+            )
+            for group_id in _group_ids(connection)
+            if group_id in bounds
+        )
     assignment = run_bucketing_pass(connection, params=params)
     _record_stage_latency(connection, assignment, now)
     active_parts = PartSettings() if parts is None else parts
@@ -178,6 +244,179 @@ def run_worker(
             backoff = backoff_min_seconds
         if stop_event.wait(delay):
             return
+
+
+def run_live_tick(
+    connection: sqlite3.Connection,
+    *,
+    source: DiscordSource,
+    now: Callable[[], str],
+    alert_sender: AlertSender | None = None,
+    poll_safety_margin_seconds: float = DEFAULT_POLL_SAFETY_MARGIN_SECONDS,
+    clock_mode: str = "LIVE",
+    params: BucketParams | None = None,
+    classifier: RelevanceClassifier | None = None,
+    generator: ProposalGenerator | None = None,
+    parts: PartSettings | None = None,
+    consecutive_failures: dict[int, int] | None = None,
+) -> LiveTickResult:
+    """Poll every mapped group, ingest its page, then run the bounded tick.
+
+    For each group the cursor is read from the stored messages (no cursor
+    table), every fetched message is committed through
+    :func:`backend.ingest.ingest_message`, and only then is the poll instant
+    recorded. A group that fails while fetching or ingesting gets no instant,
+    so the tick leaves its clock unchanged and closes nothing; the remaining
+    groups continue. Repeated consecutive failures raise a
+    :data:`backend.alerts.POLL_FAILURE_RULE` alert through ``alert_sender``.
+
+    REPLAY groups are skipped entirely: live polling must not mix live data
+    into a replay clock (PB-1 mode lock). ``consecutive_failures`` is an
+    optional caller-owned counter map so a long-running loop can accumulate
+    the repeated-failure condition across calls; the returned mapping is a
+    snapshot. ``now`` is injected; this function never reads the wall clock.
+    """
+    if poll_safety_margin_seconds < 0:
+        raise ValueError(
+            "poll_safety_margin_seconds must be non-negative,"
+            f" got {poll_safety_margin_seconds!r}"
+        )
+    failures: dict[int, int] = (
+        {} if consecutive_failures is None else consecutive_failures
+    )
+    tick_now = now()
+    poll_instants: dict[int, str] = {}
+    polls: list[GroupPollResult] = []
+    for group_id, channel_id in _mapped_groups(connection):
+        stored = read_group_clock(connection, group_id)
+        if stored is not None and stored.mode == "REPLAY":
+            polls.append(
+                GroupPollResult(
+                    group_id=group_id,
+                    channel_id=channel_id,
+                    skipped_replay=True,
+                )
+            )
+            continue
+        cursor = read_cursor(connection, channel_id=channel_id)
+        try:
+            events = source.fetch_messages(channel_id=channel_id, after=cursor)
+            stored_count = 0
+            duplicates = 0
+            for event in events:
+                outcome = ingest_message(connection, event)
+                if outcome.created:
+                    stored_count += 1
+                else:
+                    duplicates += 1
+            # The page is committed at this point; only now may the poll
+            # instant authorize the group's clock (W8a).
+            polled_at = now()
+            poll_instants[group_id] = polled_at
+            failures[group_id] = 0
+            polls.append(
+                GroupPollResult(
+                    group_id=group_id,
+                    channel_id=channel_id,
+                    fetched=len(events),
+                    stored=stored_count,
+                    duplicates=duplicates,
+                    polled_at=polled_at,
+                )
+            )
+        except Exception as error:  # noqa: BLE001 - one group must not block
+            # the others; the durable cursor/clock state makes the retry safe.
+            failures[group_id] = failures.get(group_id, 0) + 1
+            logger.error(
+                "live poll failed for group %s channel %s: %s",
+                group_id,
+                channel_id,
+                type(error).__name__,
+            )
+            if (
+                alert_sender is not None
+                and failures[group_id] >= POLL_ALERT_AFTER_FAILURES
+            ):
+                alert_sender.send(
+                    Alert(
+                        rule=POLL_FAILURE_RULE,
+                        severity="ERROR",
+                        observed=failures[group_id],
+                        threshold=POLL_ALERT_AFTER_FAILURES,
+                        message=(
+                            f"group {group_id} channel {channel_id}:"
+                            " consecutive live poll failures"
+                        ),
+                        at=tick_now,
+                    )
+                )
+            polls.append(
+                GroupPollResult(
+                    group_id=group_id,
+                    channel_id=channel_id,
+                    failed=True,
+                )
+            )
+    tick = run_pipeline_tick(
+        connection,
+        now=tick_now,
+        clock_mode=clock_mode,
+        classifier=classifier,
+        generator=generator,
+        params=params,
+        parts=parts,
+        poll_instants=poll_instants,
+        poll_safety_margin_seconds=poll_safety_margin_seconds,
+    )
+    return LiveTickResult(
+        polls=tuple(polls),
+        tick=tick,
+        consecutive_failures=dict(failures),
+    )
+
+
+def _mapped_groups(connection: sqlite3.Connection) -> list[tuple[int, str]]:
+    """Every source group with its Discord channel, ordered by id."""
+    rows = connection.execute(
+        "SELECT id, discord_channel_id FROM source_group ORDER BY id"
+    ).fetchall()
+    return [(int(row["id"]), str(row["discord_channel_id"])) for row in rows]
+
+
+def _poll_bounded_instants(
+    connection: sqlite3.Connection,
+    *,
+    now: str,
+    poll_instants: Mapping[int, str],
+    margin_seconds: float,
+    clock_mode: str,
+) -> dict[int, str]:
+    """Compute ``min(now, polled_at - margin)`` per successfully polled group.
+
+    Missing poll instants produce no bound, so a failed or absent poll holds
+    the clock. A group already locked to a different mode is skipped: a live
+    poll never advances (or relabels) a REPLAY clock.
+    """
+    now_instant = _parse_instant(now)
+    margin = timedelta(seconds=margin_seconds)
+    bounds: dict[int, str] = {}
+    for group_id in _group_ids(connection):
+        raw = poll_instants.get(group_id)
+        if raw is None:
+            continue
+        stored = read_group_clock(connection, group_id)
+        if stored is not None and stored.mode != clock_mode:
+            continue
+        polled_at = _parse_instant(raw)
+        bounds[group_id] = min(now_instant, polled_at - margin).isoformat()
+    return bounds
+
+
+def _parse_instant(value: str) -> datetime:
+    try:
+        return parse_event_time(value)
+    except _TimestampError as error:
+        raise ValueError(f"invalid instant: {value!r}") from error
 
 
 def _validate_timing(

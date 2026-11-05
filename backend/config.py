@@ -79,24 +79,34 @@ def load_config(environ: Mapping[str, str] | None = None) -> Config:
     return Config(dict(source))
 
 
+#: W8a owner decision: a successful live poll authorizes the group clock only
+#: to the poll instant minus this safety margin, so closure never runs ahead of
+#: a page that has not been fetched and committed yet.
+DEFAULT_POLL_SAFETY_MARGIN_SECONDS = 2.0
+
+
 @dataclass(frozen=True)
 class WorkerSettings:
     """Validated worker-loop timing (O9-3, NFR-MNT-01).
 
     Defaults are the owner-approved values: a 2 s interval with a 1-60 s
-    exponential backoff after a failed tick. Every value is configuration,
-    never a hard-coded constant at the call site.
+    exponential backoff after a failed tick. ``poll_safety_margin_seconds``
+    (W8a) is the delay between a successful poll instant and the clock
+    boundary it authorizes; it may be zero but never negative. Every value is
+    configuration, never a hard-coded constant at the call site.
     """
 
     interval_seconds: float = 2.0
     backoff_min_seconds: float = 1.0
     backoff_max_seconds: float = 60.0
+    poll_safety_margin_seconds: float = DEFAULT_POLL_SAFETY_MARGIN_SECONDS
 
 
 #: Configuration keys read by :func:`load_worker_settings`.
 WORKER_INTERVAL_KEY = "WORKER_INTERVAL_SECONDS"
 WORKER_BACKOFF_MIN_KEY = "WORKER_BACKOFF_MIN_SECONDS"
 WORKER_BACKOFF_MAX_KEY = "WORKER_BACKOFF_MAX_SECONDS"
+POLL_SAFETY_MARGIN_KEY = "POLL_SAFETY_MARGIN_SECONDS"
 
 
 def load_worker_settings(config: Config) -> WorkerSettings:
@@ -126,7 +136,25 @@ def load_worker_settings(config: Config) -> WorkerSettings:
         interval_seconds=interval,
         backoff_min_seconds=backoff_min,
         backoff_max_seconds=backoff_max,
+        poll_safety_margin_seconds=_non_negative_float(
+            config,
+            POLL_SAFETY_MARGIN_KEY,
+            defaults.poll_safety_margin_seconds,
+        ),
     )
+
+
+def _non_negative_float(config: Config, name: str, default: float) -> float:
+    raw = config.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError as error:
+        raise ConfigError(f"{name} must be a number, got {raw!r}") from error
+    if not value >= 0:
+        raise ConfigError(f"{name} must be non-negative, got {raw!r}")
+    return value
 
 
 def _positive_float(config: Config, name: str, default: float) -> float:
