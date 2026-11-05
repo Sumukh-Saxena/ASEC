@@ -146,6 +146,13 @@ def test_invalid_part_settings_fail_loudly(value: str) -> None:
         load_part_settings(config)
 
 
+def test_production_database_path_is_documented() -> None:
+    env_example = REPO_ROOT / ".env.example"
+    text = env_example.read_text(encoding="utf-8")
+
+    assert "ASEC_DB_PATH" in text
+
+
 def test_env_example_exists_and_has_no_real_secrets() -> None:
     env_example = REPO_ROOT / ".env.example"
     assert env_example.is_file()

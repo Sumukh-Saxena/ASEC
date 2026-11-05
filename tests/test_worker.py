@@ -19,6 +19,7 @@ import pytest
 
 from backend.bucketing import BucketParams
 from backend.config import (
+    DEFAULT_POLL_ALERT_AFTER_FAILURES,
     ConfigError,
     PartSettings,
     load_config,
@@ -481,6 +482,8 @@ def test_worker_settings_defaults() -> None:
     assert settings.interval_seconds == 2.0
     assert settings.backoff_min_seconds == 1.0
     assert settings.backoff_max_seconds == 60.0
+    assert DEFAULT_POLL_ALERT_AFTER_FAILURES == 5
+    assert settings.poll_alert_after_failures == 5
 
 
 def test_worker_settings_are_read_from_configuration() -> None:
@@ -490,12 +493,14 @@ def test_worker_settings_are_read_from_configuration() -> None:
                 "WORKER_INTERVAL_SECONDS": "5",
                 "WORKER_BACKOFF_MIN_SECONDS": "2",
                 "WORKER_BACKOFF_MAX_SECONDS": "30",
+                "POLL_ALERT_AFTER_FAILURES": "3",
             }
         )
     )
     assert settings.interval_seconds == 5.0
     assert settings.backoff_min_seconds == 2.0
     assert settings.backoff_max_seconds == 30.0
+    assert settings.poll_alert_after_failures == 3
 
 
 @pytest.mark.parametrize(
@@ -505,6 +510,8 @@ def test_worker_settings_are_read_from_configuration() -> None:
         ({"WORKER_INTERVAL_SECONDS": "-1"}, "positive"),
         ({"WORKER_INTERVAL_SECONDS": "soon"}, "number"),
         ({"WORKER_BACKOFF_MIN_SECONDS": "0"}, "positive"),
+        ({"POLL_ALERT_AFTER_FAILURES": "0"}, "positive"),
+        ({"POLL_ALERT_AFTER_FAILURES": "2.5"}, "integer"),
         (
             {
                 "WORKER_BACKOFF_MIN_SECONDS": "10",

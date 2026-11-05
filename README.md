@@ -648,4 +648,7 @@ python -m backend --version
 
 Configuration is read from the process environment. Copy `.env.example` to `.env`
 and fill in values locally; `.env` is git-ignored and must never be committed or
-logged. Direct development dependencies are pinned exactly in `pyproject.toml`.
+logged. `ASEC_DB_PATH` is the single documented production database path:
+`python -m backend run-live` uses it when `--db` is omitted, and both `run-live`
+and `discord-smoke` refuse a `--db` that resolves to it. Direct development
+dependencies are pinned exactly in `pyproject.toml`.

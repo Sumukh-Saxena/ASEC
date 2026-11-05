@@ -1,4 +1,4 @@
-"""Backend entrypoint: version flag and the owner-authorized Discord smoke.
+"""Backend entrypoint: version flag, the Discord smoke and the live runner.
 
 The smoke command is a manual, read-only verification step (owner addition 4
 to Phase 9 W5). It reads one page of recent Discord messages, ingests them
@@ -6,13 +6,22 @@ through the normal :func:`backend.ingest.ingest_message` path into a scratch
 database, and prints counts only — never message content, Discord user ids or
 the bot token. It refuses to run against the configured production database
 path (:data:`PRODUCTION_DB_PATH_KEY`).
+
+``run-live`` (W8b A3) is the process boundary that drives the W8a live tick:
+it reads the token through :meth:`Config.require`, refuses the production path
+as a ``--db`` argument and any database already locked to REPLAY, checks the
+Message Content readiness once, and then polls at the configured interval
+until interrupted. It installs no scheduler and prints counts only.
 """
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import sys
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 
 from backend import __version__
 from backend.alerts import LogAlertSender
@@ -22,6 +31,7 @@ from backend.config import (
     ConfigError,
     load_config,
     load_discord_settings,
+    load_worker_settings,
 )
 from backend.db.connection import connect
 from backend.db.migrations import apply_migrations
@@ -30,16 +40,26 @@ from backend.discord_adapter import (
     DiscordRestSource,
     Transport,
     check_live_readiness,
+    check_live_start,
 )
 from backend.ingest import ingest_message
+from backend.worker import LiveTickResult, run_live_tick
 
-#: Environment variable naming the production database file. The smoke command
-#: refuses to touch this file, so a manual test can never write live data.
+logger = logging.getLogger("asec.cli")
+
+#: The single documented production database path. ``discord-smoke`` and
+#: ``run-live`` refuse a ``--db`` that resolves to it; ``run-live`` without
+#: ``--db`` uses it.
 PRODUCTION_DB_PATH_KEY = "ASEC_DB_PATH"
 
 _USAGE = (
     "usage: python -m backend discord-smoke --channel-id <id>"
     " [--db <scratch path>]"
+)
+
+_LIVE_USAGE = (
+    "usage: python -m backend run-live [--db <database path>]"
+    " [--interval-seconds <positive number>] [--once]"
 )
 
 
@@ -127,8 +147,178 @@ def _run_discord_smoke(
         f" empty_content={result.empty_content}"
         f" with_mentions={result.with_mentions}"
         f" with_reply={result.with_reply}"
+        f" skipped_system={result.skipped_system}"
+        f" skipped_bot={result.skipped_bot}"
+        f" skipped_sticker={result.skipped_sticker}"
     )
     return 0
+
+
+def _parse_live_args(
+    args: Sequence[str],
+) -> tuple[str | None, float | None, bool] | None:
+    database: str | None = None
+    interval: float | None = None
+    once = False
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if option in ("--db", "--interval-seconds"):
+            if index + 1 >= len(args):
+                return None
+            value = args[index + 1].strip()
+            if value == "":
+                return None
+            if option == "--db":
+                database = value
+            else:
+                try:
+                    parsed = float(value)
+                except ValueError:
+                    return None
+                if parsed <= 0:
+                    return None
+                interval = parsed
+            index += 2
+            continue
+        if option == "--once":
+            once = True
+            index += 1
+            continue
+        return None
+    return database, interval, once
+
+
+def _has_replay_clock(connection: sqlite3.Connection) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM source_group_clock WHERE mode = 'REPLAY' LIMIT 1"
+    ).fetchone()
+    return row is not None
+
+
+def _mapped_channels(connection: sqlite3.Connection) -> list[tuple[int, str]]:
+    rows = connection.execute(
+        "SELECT id, discord_channel_id FROM source_group ORDER BY id"
+    ).fetchall()
+    return [(int(row["id"]), str(row["discord_channel_id"])) for row in rows]
+
+
+def _print_live_counts(result: LiveTickResult) -> None:
+    """Print one cycle's counts only (never content, user ids or the token)."""
+    fetched = sum(poll.fetched for poll in result.polls)
+    stored = sum(poll.stored for poll in result.polls)
+    duplicates = sum(poll.duplicates for poll in result.polls)
+    failed = sum(1 for poll in result.polls if poll.failed)
+    skipped_replay = sum(1 for poll in result.polls if poll.skipped_replay)
+    assigned = result.tick.assigned
+    print(
+        f"fetched={fetched} stored={stored} duplicates={duplicates}"
+        f" failed={failed} skipped_replay={skipped_replay} assigned={assigned}"
+    )
+    logger.info(
+        "run-live tick fetched=%s stored=%s duplicates=%s failed=%s"
+        " skipped_replay=%s assigned=%s",
+        fetched,
+        stored,
+        duplicates,
+        failed,
+        skipped_replay,
+        assigned,
+    )
+
+
+def _run_live(
+    args: Sequence[str],
+    *,
+    config: Config,
+    transport: Transport | None,
+    sleep: Callable[[float], None],
+    now: Callable[[], str],
+) -> int:
+    parsed = _parse_live_args(args)
+    if parsed is None:
+        print(_LIVE_USAGE, file=sys.stderr)
+        return 2
+    database_arg, interval_arg, once = parsed
+    if database_arg is not None:
+        if _is_production_path(config, database_arg):
+            print(
+                "refusing to run run-live against the production database path"
+                f" configured in {PRODUCTION_DB_PATH_KEY}",
+                file=sys.stderr,
+            )
+            return 2
+        database = database_arg
+    else:
+        production = config.get(PRODUCTION_DB_PATH_KEY)
+        if production is None or production.strip() == "":
+            print(
+                f"{PRODUCTION_DB_PATH_KEY} is not set; pass --db or configure the"
+                " production database path",
+                file=sys.stderr,
+            )
+            return 2
+        database = production.strip()
+    try:
+        token = config.require(DISCORD_BOT_TOKEN_KEY)
+        discord_settings = load_discord_settings(config)
+        worker_settings = load_worker_settings(config)
+    except ConfigError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    interval = (
+        worker_settings.interval_seconds if interval_arg is None else interval_arg
+    )
+    source = DiscordRestSource(
+        token=token, transport=transport, settings=discord_settings
+    )
+    connection = connect(database)
+    try:
+        apply_migrations(connection)
+        if _has_replay_clock(connection):
+            print(
+                "refusing to run run-live against a database in REPLAY mode",
+                file=sys.stderr,
+            )
+            return 2
+        for _group_id, channel_id in _mapped_channels(connection):
+            check_live_start(source, channel_id=channel_id)
+
+        failures: dict[int, int] = {}
+        sender = LogAlertSender()
+
+        def run_cycle() -> LiveTickResult:
+            return run_live_tick(
+                connection,
+                source=source,
+                now=now,
+                alert_sender=sender,
+                poll_safety_margin_seconds=(
+                    worker_settings.poll_safety_margin_seconds
+                ),
+                poll_alert_after_failures=(
+                    worker_settings.poll_alert_after_failures
+                ),
+                consecutive_failures=failures,
+            )
+
+        if once:
+            _print_live_counts(run_cycle())
+            return 0
+        while True:
+            _print_live_counts(run_cycle())
+            sleep(interval)
+    except KeyboardInterrupt:
+        return 0
+    except (DiscordAdapterError, sqlite3.Error) as error:
+        print(f"run-live failed: {error}", file=sys.stderr)
+        return 2
+    finally:
+        connection.close()
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 def main(
@@ -136,6 +326,8 @@ def main(
     *,
     config: Config | None = None,
     transport: Transport | None = None,
+    sleep: Callable[[float], None] | None = None,
+    now: Callable[[], str] | None = None,
 ) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args == ["--version"]:
@@ -147,8 +339,16 @@ def main(
             config=load_config() if config is None else config,
             transport=transport,
         )
+    if args and args[0] == "run-live":
+        return _run_live(
+            args[1:],
+            config=load_config() if config is None else config,
+            transport=transport,
+            sleep=time.sleep if sleep is None else sleep,
+            now=_utc_now if now is None else now,
+        )
     print(
-        "ASEC backend (Phase 0). Use --version or 'discord-smoke'.",
+        "ASEC backend (Phase 0). Use --version, 'discord-smoke' or 'run-live'.",
         file=sys.stderr,
     )
     return 2

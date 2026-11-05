@@ -84,6 +84,11 @@ def load_config(environ: Mapping[str, str] | None = None) -> Config:
 #: a page that has not been fetched and committed yet.
 DEFAULT_POLL_SAFETY_MARGIN_SECONDS = 2.0
 
+#: W8b owner decision: consecutive failed polls for one group before an alert
+#: is raised. The first failures are retries; repeated failures need an
+#: operator. The value is configuration (A10), never a call-site constant.
+DEFAULT_POLL_ALERT_AFTER_FAILURES = 5
+
 
 @dataclass(frozen=True)
 class WorkerSettings:
@@ -92,14 +97,17 @@ class WorkerSettings:
     Defaults are the owner-approved values: a 2 s interval with a 1-60 s
     exponential backoff after a failed tick. ``poll_safety_margin_seconds``
     (W8a) is the delay between a successful poll instant and the clock
-    boundary it authorizes; it may be zero but never negative. Every value is
-    configuration, never a hard-coded constant at the call site.
+    boundary it authorizes; it may be zero but never negative.
+    ``poll_alert_after_failures`` (W8b) is the consecutive-failure threshold
+    for one group's poll alert. Every value is configuration, never a
+    hard-coded constant at the call site.
     """
 
     interval_seconds: float = 2.0
     backoff_min_seconds: float = 1.0
     backoff_max_seconds: float = 60.0
     poll_safety_margin_seconds: float = DEFAULT_POLL_SAFETY_MARGIN_SECONDS
+    poll_alert_after_failures: int = DEFAULT_POLL_ALERT_AFTER_FAILURES
 
 
 #: Configuration keys read by :func:`load_worker_settings`.
@@ -107,6 +115,7 @@ WORKER_INTERVAL_KEY = "WORKER_INTERVAL_SECONDS"
 WORKER_BACKOFF_MIN_KEY = "WORKER_BACKOFF_MIN_SECONDS"
 WORKER_BACKOFF_MAX_KEY = "WORKER_BACKOFF_MAX_SECONDS"
 POLL_SAFETY_MARGIN_KEY = "POLL_SAFETY_MARGIN_SECONDS"
+POLL_ALERT_AFTER_FAILURES_KEY = "POLL_ALERT_AFTER_FAILURES"
 
 
 def load_worker_settings(config: Config) -> WorkerSettings:
@@ -140,6 +149,11 @@ def load_worker_settings(config: Config) -> WorkerSettings:
             config,
             POLL_SAFETY_MARGIN_KEY,
             defaults.poll_safety_margin_seconds,
+        ),
+        poll_alert_after_failures=_positive_int(
+            config,
+            POLL_ALERT_AFTER_FAILURES_KEY,
+            defaults.poll_alert_after_failures,
         ),
     )
 
@@ -260,6 +274,7 @@ DISCORD_BACKOFF_BASE_KEY = "DISCORD_BACKOFF_BASE_SECONDS"
 DISCORD_BACKOFF_MAX_KEY = "DISCORD_BACKOFF_MAX_SECONDS"
 DISCORD_POLL_INTERVAL_KEY = "DISCORD_POLL_INTERVAL_SECONDS"
 DISCORD_MAX_PAGES_KEY = "DISCORD_MAX_PAGES"
+DISCORD_ALLOWED_BOT_IDS_KEY = "DISCORD_ALLOWED_BOT_USER_IDS"
 
 
 @dataclass(frozen=True)
@@ -268,6 +283,8 @@ class DiscordSettings:
 
     Discord caps ``limit`` at 100. Every value is configuration; an invalid
     value raises :class:`ConfigError` instead of being clamped silently.
+    ``allowed_bot_user_ids`` (W8b) is the explicit exception to the bot filter:
+    a bot or webhook author whose id is listed is ingested like a human.
     """
 
     page_limit: int = DEFAULT_DISCORD_PAGE_LIMIT
@@ -277,6 +294,7 @@ class DiscordSettings:
     backoff_max_seconds: float = DEFAULT_DISCORD_BACKOFF_MAX_SECONDS
     poll_interval_seconds: float = DEFAULT_DISCORD_POLL_INTERVAL_SECONDS
     max_pages: int = DEFAULT_DISCORD_MAX_PAGES
+    allowed_bot_user_ids: frozenset[str] = frozenset()
 
 
 def load_discord_settings(config: Config) -> DiscordSettings:
@@ -316,4 +334,33 @@ def load_discord_settings(config: Config) -> DiscordSettings:
         max_pages=_positive_int(
             config, DISCORD_MAX_PAGES_KEY, defaults.max_pages
         ),
+        allowed_bot_user_ids=_discord_id_set(
+            config,
+            DISCORD_ALLOWED_BOT_IDS_KEY,
+            defaults.allowed_bot_user_ids,
+        ),
     )
+
+
+def _discord_id_set(
+    config: Config, name: str, default: frozenset[str]
+) -> frozenset[str]:
+    """Parse a comma-separated Discord-id allow list (W8b).
+
+    Blank means the default (empty). Every entry must be a non-empty numeric
+    Discord id; an invalid entry is a configuration error, never silently
+    dropped.
+    """
+    raw = config.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    values: set[str] = set()
+    for part in raw.split(","):
+        item = part.strip()
+        if item == "" or not item.isascii() or not item.isdigit():
+            raise ConfigError(
+                f"{name} must be a comma-separated list of numeric Discord ids,"
+                f" got {raw!r}"
+            )
+        values.add(item)
+    return frozenset(values)

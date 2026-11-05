@@ -121,14 +121,21 @@ def _payload(
     reply_to: str | None = None,
     attachments: Sequence[str] = (),
     embeds: Sequence[str] = (),
+    message_type: int = 0,
+    bot: bool = False,
+    webhook_id: str | None = None,
+    stickers: Sequence[str] = (),
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "id": message_id,
         "channel_id": channel_id,
         "content": content,
         "timestamp": "2026-01-01T00:00:00.000000+00:00",
-        "author": {"id": user_id},
+        "type": message_type,
+        "author": {"id": user_id, "bot": bot},
     }
+    if webhook_id is not None:
+        payload["webhook_id"] = webhook_id
     if mentions:
         payload["mentions"] = [{"id": mention} for mention in mentions]
     if reply_to is not None:
@@ -137,6 +144,8 @@ def _payload(
         payload["attachments"] = [{"id": item} for item in attachments]
     if embeds:
         payload["embeds"] = [{"type": "rich"} for _ in embeds]
+    if stickers:
+        payload["sticker_items"] = [{"id": item} for item in stickers]
     return payload
 
 
@@ -247,6 +256,85 @@ def test_missing_channel_and_sender_stay_none() -> None:
 
 
 # ---------------------------------------------------------------------------
+# A6/A8: only human-authored default/reply messages enter ingestion
+
+
+def test_only_default_and_reply_message_types_are_ingested() -> None:
+    join_notice = _payload("70", content="", message_type=7)
+    pin_notice = _payload("71", content="pinned a message", message_type=6)
+    reply = _payload("72", content="answering", message_type=19, reply_to="71")
+    normal = _payload("73", content="hello", message_type=0)
+    transport = FakeTransport(
+        [_http(body=_json([join_notice, pin_notice, reply, normal]))]
+    )
+    sender = RecordingSender()
+
+    result = _source(transport).poll(channel_id="chan-1", after=None, sender=sender)
+
+    assert result.fetched == 4
+    assert result.skipped_system == 2
+    assert [message.source_message_id for message in result.messages] == ["72", "73"]
+    assert result.with_reply == 1
+    assert sender.alerts == []
+
+
+def test_bot_and_webhook_authors_are_skipped() -> None:
+    bot = _payload("74", content="bot post", bot=True)
+    webhook = _payload(
+        "75", content="webhook post", user_id="hook-user", webhook_id="wh-1"
+    )
+    human = _payload("76", content="human post")
+    transport = FakeTransport([_http(body=_json([bot, webhook, human]))])
+    sender = RecordingSender()
+
+    result = _source(transport).poll(channel_id="chan-1", after=None, sender=sender)
+
+    assert result.fetched == 3
+    assert result.skipped_bot == 2
+    assert [message.source_message_id for message in result.messages] == ["76"]
+    assert sender.alerts == []
+
+
+def test_an_allow_listed_bot_is_ingested() -> None:
+    allowed = _payload("77", content="approved bot", user_id="900", bot=True)
+    blocked = _payload("78", content="other bot", user_id="901", bot=True)
+    transport = FakeTransport([_http(body=_json([allowed, blocked]))])
+    settings = DiscordSettings(allowed_bot_user_ids=frozenset({"900"}))
+
+    result = _source(transport, settings=settings).poll(
+        channel_id="chan-1", after=None
+    )
+
+    assert result.fetched == 2
+    assert result.skipped_bot == 1
+    assert [message.source_message_id for message in result.messages] == ["77"]
+
+
+def test_sticker_only_messages_are_skipped_and_never_alerted() -> None:
+    sticker = _payload("79", content="", stickers=("sticker-1",))
+    transport = FakeTransport([_http(body=_json([sticker]))])
+    sender = RecordingSender()
+
+    result = _source(transport).poll(channel_id="chan-1", after=None, sender=sender)
+
+    assert result.fetched == 1
+    assert result.skipped_sticker == 1
+    assert result.messages == ()
+    assert result.empty_content == 0
+    assert sender.alerts == []
+
+
+def test_a_sticker_with_text_is_not_sticker_only() -> None:
+    sticker = _payload("79", content="look at this", stickers=("sticker-1",))
+    transport = FakeTransport([_http(body=_json([sticker]))])
+
+    result = _source(transport).poll(channel_id="chan-1", after=None)
+
+    assert result.skipped_sticker == 0
+    assert [message.source_message_id for message in result.messages] == ["79"]
+
+
+# ---------------------------------------------------------------------------
 # Cursor from the database
 
 
@@ -326,6 +414,32 @@ def test_pagination_stops_when_the_cursor_does_not_advance() -> None:
     events = source.fetch_messages(channel_id="chan-1", after=None)
 
     assert len(events) == 2
+    assert len(transport.requests) == 2
+
+
+def test_pagination_continues_past_a_fully_skipped_page() -> None:
+    settings = DiscordSettings(page_limit=2, max_pages=2)
+    transport = FakeTransport(
+        [
+            _http(
+                body=_json(
+                    [
+                        _payload("4", content="", bot=True),
+                        _payload("3", content="", message_type=7),
+                    ]
+                )
+            ),
+            _http(body=_json([_payload("2"), _payload("1")])),
+        ]
+    )
+    source = _source(transport, settings=settings)
+
+    result = source.poll(channel_id="chan-1", after=None)
+
+    assert result.fetched == 4
+    assert result.skipped_bot == 1
+    assert result.skipped_system == 1
+    assert [message.source_message_id for message in result.messages] == ["1", "2"]
     assert len(transport.requests) == 2
 
 
@@ -542,6 +656,20 @@ def test_whitespace_only_content_is_never_treated_as_a_real_message() -> None:
     assert len(sender.alerts) == 1
 
 
+def test_empty_content_alerts_are_aggregated_per_poll_per_channel() -> None:
+    empties = [_payload(str(100 + index), content="") for index in range(3)]
+    transport = FakeTransport([_http(body=_json(empties))])
+    sender = RecordingSender()
+
+    result = _source(transport).poll(channel_id="chan-1", after=None, sender=sender)
+
+    assert result.empty_content == 3
+    assert len(sender.alerts) == 1
+    assert sender.alerts[0].rule == "EMPTY_CONTENT"
+    assert sender.alerts[0].observed == 3
+    assert "chan-1" in sender.alerts[0].message
+
+
 def test_poll_counts_mentions_and_replies() -> None:
     transport = FakeTransport(
         [
@@ -715,6 +843,26 @@ def test_invalid_discord_settings_fail_loudly(key: str, value: str) -> None:
         load_discord_settings(Config({key: value}))
 
 
+def test_allowed_bot_ids_default_to_empty() -> None:
+    settings = load_discord_settings(Config({}))
+
+    assert settings.allowed_bot_user_ids == frozenset()
+
+
+def test_allowed_bot_ids_are_read_from_configuration() -> None:
+    settings = load_discord_settings(
+        Config({"DISCORD_ALLOWED_BOT_USER_IDS": "111, 222"})
+    )
+
+    assert settings.allowed_bot_user_ids == frozenset({"111", "222"})
+
+
+@pytest.mark.parametrize("value", ["abc", "111,,222", "111,45x"])
+def test_invalid_allowed_bot_ids_fail_loudly(value: str) -> None:
+    with pytest.raises(ConfigError):
+        load_discord_settings(Config({"DISCORD_ALLOWED_BOT_USER_IDS": value}))
+
+
 # ---------------------------------------------------------------------------
 # Owner addition 4: the owner-authorized manual smoke command
 
@@ -781,6 +929,7 @@ def test_smoke_command_ingests_one_page_and_prints_only_counts(
     assert captured.out.strip() == (
         "fetched=3 stored=2 duplicates=1"
         " empty_content=1 with_mentions=1 with_reply=0"
+        " skipped_system=0 skipped_bot=0 skipped_sticker=0"
     )
     assert "fresh" not in captured.out
     assert "user-50" not in captured.out
@@ -814,6 +963,39 @@ def test_smoke_command_fetches_one_recent_page_without_using_the_cursor(
     assert captured.out.strip() == (
         "fetched=2 stored=2 duplicates=0"
         " empty_content=0 with_mentions=0 with_reply=0"
+        " skipped_system=0 skipped_bot=0 skipped_sticker=0"
+    )
+
+
+def test_smoke_command_reports_skipped_system_bot_and_sticker(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = _smoke_db(tmp_path)
+    transport = FakeTransport(
+        [
+            _http(
+                body=_json(
+                    [
+                        _payload("80", content="", message_type=7),
+                        _payload("81", content="bot post", bot=True),
+                        _payload("82", content="", stickers=("s-1",)),
+                        _payload("83", content="human post"),
+                    ]
+                )
+            )
+        ]
+    )
+
+    code = _run_smoke(
+        ["--channel-id", "chan-1", "--db", str(db)], transport=transport
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == (
+        "fetched=4 stored=1 duplicates=0"
+        " empty_content=0 with_mentions=0 with_reply=0"
+        " skipped_system=1 skipped_bot=1 skipped_sticker=1"
     )
 
 
@@ -836,6 +1018,25 @@ def test_smoke_command_refuses_the_production_database_path(
 
     code = _run_smoke(
         ["--channel-id", "chan-1", "--db", str(db)],
+        transport=transport,
+        config=_smoke_config(db),
+    )
+
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "production" in captured.err.lower()
+    assert transport.requests == []
+
+
+def test_smoke_command_refuses_the_production_path_after_resolving(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = _smoke_db(tmp_path)
+    alias = tmp_path / "nested" / ".." / "scratch.db"
+    transport = FakeTransport([_http(body=b"[]")])
+
+    code = _run_smoke(
+        ["--channel-id", "chan-1", "--db", str(alias)],
         transport=transport,
         config=_smoke_config(db),
     )

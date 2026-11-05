@@ -25,6 +25,7 @@ from backend.alerts import POLL_FAILURE_RULE, Alert
 from backend.bucketing import BucketParams
 from backend.clock import advance_group_clock, read_group_clock
 from backend.config import (
+    DEFAULT_POLL_ALERT_AFTER_FAILURES,
     DEFAULT_POLL_SAFETY_MARGIN_SECONDS,
     ConfigError,
     DiscordSettings,
@@ -478,6 +479,7 @@ def test_repeated_poll_failures_alert_through_the_sender(
         alert_sender=sender,
         consecutive_failures=failures,
         poll_safety_margin_seconds=2,
+        poll_alert_after_failures=2,
         params=_PARAMS,
     )
     assert first.polls[0].failed is True
@@ -490,6 +492,7 @@ def test_repeated_poll_failures_alert_through_the_sender(
         alert_sender=sender,
         consecutive_failures=failures,
         poll_safety_margin_seconds=2,
+        poll_alert_after_failures=2,
         params=_PARAMS,
     )
 
@@ -498,6 +501,46 @@ def test_repeated_poll_failures_alert_through_the_sender(
     assert len(sender.alerts) == 1
     assert sender.alerts[0].rule == POLL_FAILURE_RULE
     assert sender.alerts[0].observed == 2
+
+
+def test_poll_failure_alert_threshold_defaults_to_five(
+    conn: sqlite3.Connection,
+) -> None:
+    _group(conn)
+
+    def responder(channel: str, after: str | None) -> bytes | Exception:
+        return OSError("channel unavailable")
+
+    sender = RecordingSender()
+    source = _source(FakeTransport(responder))
+    failures: dict[int, int] = {}
+
+    for attempt in range(1, DEFAULT_POLL_ALERT_AFTER_FAILURES):
+        run_live_tick(
+            conn,
+            source=source,
+            now=FakeClock(_iso(100 + attempt)),
+            alert_sender=sender,
+            consecutive_failures=failures,
+            poll_safety_margin_seconds=2,
+            params=_PARAMS,
+        )
+        assert sender.alerts == []
+
+    result = run_live_tick(
+        conn,
+        source=source,
+        now=FakeClock(_iso(200)),
+        alert_sender=sender,
+        consecutive_failures=failures,
+        poll_safety_margin_seconds=2,
+        params=_PARAMS,
+    )
+
+    assert result.polls[0].failed is True
+    assert len(sender.alerts) == 1
+    assert sender.alerts[0].observed == DEFAULT_POLL_ALERT_AFTER_FAILURES
+    assert sender.alerts[0].threshold == DEFAULT_POLL_ALERT_AFTER_FAILURES
 
 
 def test_poll_instants_are_recorded_after_ingestion(

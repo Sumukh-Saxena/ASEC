@@ -83,6 +83,9 @@ class PollResult:
 
     ``latest_page`` is the first (newest) page the poll fetched, so the health
     check can judge the page a LIVE start would see without a second request.
+    ``fetched`` is the raw payload item count returned by Discord (W8b A9);
+    ``messages`` contains only the entries that passed the system/bot/sticker
+    filters, whose counts are reported separately.
     """
 
     messages: tuple[MessageEvent, ...]
@@ -91,6 +94,33 @@ class PollResult:
     empty_content: int
     with_mentions: int
     with_reply: int
+    skipped_system: int = 0
+    skipped_bot: int = 0
+    skipped_sticker: int = 0
+
+
+@dataclass(frozen=True)
+class _PollStats:
+    """Raw and filtered counts accumulated across the fetched pages."""
+
+    fetched: int = 0
+    skipped_system: int = 0
+    skipped_bot: int = 0
+    skipped_sticker: int = 0
+
+
+@dataclass(frozen=True)
+class _PageResult:
+    """One page's normalized events, its raw/skip counts and its newest raw id.
+
+    ``last_message_id`` is derived from every raw payload item, not only the
+    entries that survived filtering, so pagination cannot stop early or repeat
+    a page when a page is mostly system/bot/sticker messages.
+    """
+
+    events: tuple[MessageEvent, ...]
+    stats: _PollStats
+    last_message_id: str | None
 
 
 class UrllibTransport:
@@ -138,6 +168,7 @@ class DiscordRestSource:
         self._now = _utc_now_iso if now is None else now
         self._last_successful_poll_at: str | None = None
         self._latest_page: tuple[MessageEvent, ...] = ()
+        self._last_stats = _PollStats()
 
     def __repr__(self) -> str:
         # The token is deliberately absent: a source object is safe to log.
@@ -155,19 +186,21 @@ class DiscordRestSource:
         self, *, channel_id: str, after: str | None
     ) -> tuple[MessageEvent, ...]:
         """Fetch every new message for ``channel_id`` after ``after``."""
-        messages, latest_page = self._download(
+        messages, latest_page, stats = self._download(
             channel_id=channel_id, after=after, paginate=True
         )
         self._latest_page = latest_page
+        self._last_stats = stats
         self._last_successful_poll_at = self._now()
         return messages
 
     def fetch_latest_page(self, *, channel_id: str) -> tuple[MessageEvent, ...]:
         """Fetch exactly one page (newest first) for the LIVE-start health check."""
-        _, latest_page = self._download(
+        _, latest_page, stats = self._download(
             channel_id=channel_id, after=None, paginate=False
         )
         self._latest_page = latest_page
+        self._last_stats = stats
         self._last_successful_poll_at = self._now()
         return latest_page
 
@@ -193,6 +226,7 @@ class DiscordRestSource:
         return self._summarize(
             messages,
             latest_page=self._latest_page,
+            stats=self._last_stats,
             channel_id=channel_id,
             sender=sender,
         )
@@ -203,7 +237,11 @@ class DiscordRestSource:
         """Poll exactly one recent page (the manual smoke command's contract)."""
         page = self.fetch_latest_page(channel_id=channel_id)
         return self._summarize(
-            page, latest_page=page, channel_id=channel_id, sender=sender
+            page,
+            latest_page=page,
+            stats=self._last_stats,
+            channel_id=channel_id,
+            sender=sender,
         )
 
     def _summarize(
@@ -211,65 +249,85 @@ class DiscordRestSource:
         messages: tuple[MessageEvent, ...],
         *,
         latest_page: tuple[MessageEvent, ...],
+        stats: _PollStats,
         channel_id: str,
         sender: AlertSender | None,
     ) -> PollResult:
         empty = tuple(message for message in messages if is_empty_content(message))
-        if sender is not None:
+        if sender is not None and empty:
             at = self._last_successful_poll_at or self._now()
-            for _ in empty:
-                sender.send(
-                    Alert(
-                        rule=EMPTY_CONTENT_RULE,
-                        severity="WARNING",
-                        observed=1,
-                        threshold=1,
-                        message=(
-                            f"channel {channel_id}: message with empty content,"
-                            " no attachment and no embed"
-                        ),
-                        at=at,
-                    )
+            sender.send(
+                Alert(
+                    rule=EMPTY_CONTENT_RULE,
+                    severity="WARNING",
+                    observed=len(empty),
+                    threshold=1,
+                    message=(
+                        f"channel {channel_id}: {len(empty)} message(s) with empty"
+                        " content, no attachment and no embed"
+                    ),
+                    at=at,
                 )
+            )
         return PollResult(
             messages=messages,
             latest_page=latest_page,
-            fetched=len(messages),
+            fetched=stats.fetched,
             empty_content=len(empty),
             with_mentions=sum(1 for message in messages if message.mentions),
             with_reply=sum(1 for message in messages if message.reply_reference),
+            skipped_system=stats.skipped_system,
+            skipped_bot=stats.skipped_bot,
+            skipped_sticker=stats.skipped_sticker,
         )
 
     def _download(
         self, *, channel_id: str, after: str | None, paginate: bool
-    ) -> tuple[tuple[MessageEvent, ...], tuple[MessageEvent, ...]]:
+    ) -> tuple[
+        tuple[MessageEvent, ...], tuple[MessageEvent, ...], _PollStats
+    ]:
         cursor = after
         collected: list[MessageEvent] = []
         seen: set[str] = set()
         latest_page: tuple[MessageEvent, ...] = ()
+        fetched = 0
+        skipped_system = 0
+        skipped_bot = 0
+        skipped_sticker = 0
         page_cap = self._settings.max_pages if paginate else 1
         for page_index in range(page_cap):
-            page = self._fetch_page(channel_id=channel_id, after=cursor)
+            result = self._fetch_page(channel_id=channel_id, after=cursor)
+            page = result.events
+            fetched += result.stats.fetched
+            skipped_system += result.stats.skipped_system
+            skipped_bot += result.stats.skipped_bot
+            skipped_sticker += result.stats.skipped_sticker
             if page_index == 0:
                 latest_page = page
-            if not page:
+            if result.stats.fetched == 0:
                 break
             for event in page:
                 if event.source_message_id not in seen:
                     seen.add(event.source_message_id)
                     collected.append(event)
-            if not paginate or len(page) < self._settings.page_limit:
+            if not paginate or result.stats.fetched < self._settings.page_limit:
                 break
-            newest = page[-1].source_message_id
-            if newest == cursor:
+            newest = result.last_message_id
+            if newest is None or newest == cursor:
                 break
             cursor = newest
         collected.sort(key=lambda event: _snowflake_key(event.source_message_id))
-        return tuple(collected), latest_page
+        stats = _PollStats(
+            fetched=fetched,
+            skipped_system=skipped_system,
+            skipped_bot=skipped_bot,
+            skipped_sticker=skipped_sticker,
+        )
+        return tuple(collected), latest_page, stats
 
     def _fetch_page(
         self, *, channel_id: str, after: str | None
-    ) -> tuple[MessageEvent, ...]:
+    ) -> _PageResult:
         query = f"limit={self._settings.page_limit}"
         if after is not None:
             query = f"{query}&after={after}"
@@ -280,15 +338,47 @@ class DiscordRestSource:
                 f"Discord returned a non-list message payload for channel {channel_id}"
             )
         events: list[MessageEvent] = []
+        raw_ids: list[str] = []
+        skipped_system = 0
+        skipped_bot = 0
+        skipped_sticker = 0
         for item in payload:
             if not isinstance(item, Mapping):
                 raise DiscordAdapterError(
                     "Discord returned a malformed message payload for channel"
                     f" {channel_id}"
                 )
+            item_id = _text(item.get("id"))
+            if item_id is not None:
+                raw_ids.append(item_id)
+            reason = _skip_reason(
+                item, allowed_bot_user_ids=self._settings.allowed_bot_user_ids
+            )
+            if reason == "system":
+                skipped_system += 1
+                continue
+            if reason == "bot":
+                skipped_bot += 1
+                continue
+            if reason == "sticker":
+                skipped_sticker += 1
+                continue
             events.append(_normalize_message(item, channel_id=channel_id))
-        return tuple(
+        ordered = tuple(
             sorted(events, key=lambda event: _snowflake_key(event.source_message_id))
+        )
+        newest_raw = (
+            None if not raw_ids else max(raw_ids, key=_snowflake_key)
+        )
+        return _PageResult(
+            events=ordered,
+            stats=_PollStats(
+                fetched=len(payload),
+                skipped_system=skipped_system,
+                skipped_bot=skipped_bot,
+                skipped_sticker=skipped_sticker,
+            ),
+            last_message_id=newest_raw,
         )
 
     def _request_json(self, url: str, *, channel_id: str) -> object:
@@ -408,6 +498,48 @@ def check_live_readiness(
 def check_live_start(source: DiscordSource, *, channel_id: str) -> None:
     """Fetch the latest page and apply :func:`check_live_readiness`."""
     check_live_readiness(source.fetch_latest_page(channel_id=channel_id), channel_id=channel_id)
+
+
+def _skip_reason(
+    payload: Mapping[str, object], *, allowed_bot_user_ids: frozenset[str]
+) -> str | None:
+    """Classify a payload the adapter must not ingest (W8b A6/A8).
+
+    Order: a system message type is skipped first, then a bot/webhook author
+    (unless explicitly allow-listed), then a sticker-only message. The caller
+    counts the returned reason; a skipped payload is never normalized, stored
+    or alerted.
+    """
+    message_type = payload.get("type", 0)
+    if message_type not in (0, 19):
+        return "system"
+    author = payload.get("author")
+    author_id: str | None = None
+    is_bot = False
+    if isinstance(author, Mapping):
+        author_id = _text(author.get("id"))
+        is_bot = author.get("bot") is True
+    if payload.get("webhook_id") is not None:
+        is_bot = True
+    if is_bot and (author_id is None or author_id not in allowed_bot_user_ids):
+        return "bot"
+    if _is_sticker_only(payload):
+        return "sticker"
+    return None
+
+
+def _is_sticker_only(payload: Mapping[str, object]) -> bool:
+    """True for an empty message whose only content is one or more stickers."""
+    raw_content = payload.get("content")
+    text = raw_content if isinstance(raw_content, str) else ""
+    stickers = payload.get("sticker_items")
+    return (
+        text.strip() == ""
+        and not payload.get("attachments")
+        and not payload.get("embeds")
+        and isinstance(stickers, list)
+        and len(stickers) > 0
+    )
 
 
 def _normalize_message(

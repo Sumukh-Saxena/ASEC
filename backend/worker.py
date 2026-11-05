@@ -47,7 +47,11 @@ from backend.clock import (
     advance_group_clock,
     read_group_clock,
 )
-from backend.config import DEFAULT_POLL_SAFETY_MARGIN_SECONDS, PartSettings
+from backend.config import (
+    DEFAULT_POLL_ALERT_AFTER_FAILURES,
+    DEFAULT_POLL_SAFETY_MARGIN_SECONDS,
+    PartSettings,
+)
 from backend.db.connection import transaction
 from backend.discord_adapter import DiscordSource, read_cursor
 from backend.ingest import ingest_message
@@ -62,10 +66,6 @@ logger = logging.getLogger(__name__)
 #: receipt to the tick's clock boundary that authorized assignment.
 INGESTION_DELAY_METRIC = "ingestion delay"
 BUCKET_DELAY_METRIC = "bucket delay"
-
-#: Consecutive failed polls for one group before an alert is raised (W8a).
-#: The first failure is logged as a retry; repeated failures need an operator.
-POLL_ALERT_AFTER_FAILURES = 2
 
 
 class StopEvent(Protocol):
@@ -253,6 +253,7 @@ def run_live_tick(
     now: Callable[[], str],
     alert_sender: AlertSender | None = None,
     poll_safety_margin_seconds: float = DEFAULT_POLL_SAFETY_MARGIN_SECONDS,
+    poll_alert_after_failures: int = DEFAULT_POLL_ALERT_AFTER_FAILURES,
     clock_mode: str = "LIVE",
     params: BucketParams | None = None,
     classifier: RelevanceClassifier | None = None,
@@ -280,6 +281,15 @@ def run_live_tick(
         raise ValueError(
             "poll_safety_margin_seconds must be non-negative,"
             f" got {poll_safety_margin_seconds!r}"
+        )
+    if (
+        isinstance(poll_alert_after_failures, bool)
+        or not isinstance(poll_alert_after_failures, int)
+        or poll_alert_after_failures < 1
+    ):
+        raise ValueError(
+            "poll_alert_after_failures must be a positive integer,"
+            f" got {poll_alert_after_failures!r}"
         )
     failures: dict[int, int] = (
         {} if consecutive_failures is None else consecutive_failures
@@ -335,14 +345,14 @@ def run_live_tick(
             )
             if (
                 alert_sender is not None
-                and failures[group_id] >= POLL_ALERT_AFTER_FAILURES
+                and failures[group_id] >= poll_alert_after_failures
             ):
                 alert_sender.send(
                     Alert(
                         rule=POLL_FAILURE_RULE,
                         severity="ERROR",
                         observed=failures[group_id],
-                        threshold=POLL_ALERT_AFTER_FAILURES,
+                        threshold=poll_alert_after_failures,
                         message=(
                             f"group {group_id} channel {channel_id}:"
                             " consecutive live poll failures"
