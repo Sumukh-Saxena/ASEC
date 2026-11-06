@@ -274,3 +274,27 @@ def test_run_live_rejects_an_unknown_argument(capsys: pytest.CaptureFixture[str]
     assert code != 0
     assert transport.requests == []
     capsys.readouterr()
+
+
+def test_run_live_warns_once_when_there_are_no_source_groups(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database = tmp_path / "empty.db"
+    connection = connect(database)
+    try:
+        apply_migrations(connection)
+    finally:
+        connection.close()
+    transport = FakeTransport([])
+
+    code = main(
+        ["run-live", "--db", str(database), "--once"],
+        config=_config(),
+        transport=transport,
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert transport.requests == []
+    assert "warning" in captured.err.lower()
+    assert "source_groups=0" in captured.err

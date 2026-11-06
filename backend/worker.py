@@ -28,9 +28,11 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Protocol
 
 from backend.alerts import POLL_FAILURE_RULE, Alert, AlertSender
@@ -59,7 +61,7 @@ from backend.orchestration import run_bucketing_pass
 from backend.proposals import ProposalGenerator, run_proposal_pass
 from backend.relevance import RelevanceClassifier, run_relevance_pass
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("asec.worker")
 
 #: SRS §6.4 vocabulary, recorded as free-text metric labels (0011 defines no
 #: token vocabulary). Ingestion delay is event time to receipt; bucket delay is
@@ -236,7 +238,11 @@ def run_worker(
         except Exception as error:  # noqa: BLE001 - the loop must survive a
             # failed tick; the durable attempt/clock state makes the failure
             # visible and the next tick retries it (NFR-REL-04/05).
-            logger.error("pipeline tick failed: %s", type(error).__name__)
+            logger.error(
+                "pipeline tick failed: %s frames=%s",
+                type(error).__name__,
+                _traceback_frames(error),
+            )
             delay = backoff
             backoff = min(backoff * 2, backoff_max_seconds)
         else:
@@ -450,6 +456,20 @@ def _validate_timing(
 def _utc_now() -> str:
     """The worker boundary's clock read (the only one in the tick path)."""
     return datetime.now(UTC).isoformat()
+
+
+def _traceback_frames(error: BaseException, limit: int = 5) -> str:
+    """Format the innermost ``limit`` frames as ``file:line function``.
+
+    Only the frame locations and function names are returned. The exception
+    message, its arguments, local values and source lines are deliberately
+    omitted: any of them may carry message content or a token (SRS DR-07).
+    """
+    frames = traceback.extract_tb(error.__traceback__)[-limit:]
+    return " ".join(
+        f"{Path(frame.filename).name}:{frame.lineno} {frame.name}"
+        for frame in frames
+    )
 
 
 def _group_ids(connection: sqlite3.Connection) -> list[int]:

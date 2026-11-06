@@ -122,6 +122,17 @@ class StaleTaskVersionError(TaskError):
         )
 
 
+def _require_count_row(row: sqlite3.Row | None) -> sqlite3.Row:
+    """Return a COUNT row or raise the task domain error (W9 H3).
+
+    This replaces a runtime ``assert`` so the check survives ``python -O``. The
+    message carries no user content.
+    """
+    if row is None:
+        raise TaskStateError("capacity count query returned no row")
+    return row
+
+
 @dataclass(frozen=True)
 class TaskEdit:
     """An edit request; ``_MISSING`` means "keep the current value".
@@ -659,12 +670,13 @@ def claim_open_task(
             if _active_assignment(connection, task_id, actor_person_id) is not None:
                 raise TaskStateError("ALREADY_JOINED")
             if task["people_needed"] is not None:
-                count_row = connection.execute(
-                    "SELECT COUNT(*) AS n FROM task_assignee WHERE task_id = ?"
-                    " AND agreement = 'ACCEPTED' AND cancelled = 0",
-                    (task_id,),
-                ).fetchone()
-                assert count_row is not None
+                count_row = _require_count_row(
+                    connection.execute(
+                        "SELECT COUNT(*) AS n FROM task_assignee WHERE task_id = ?"
+                        " AND agreement = 'ACCEPTED' AND cancelled = 0",
+                        (task_id,),
+                    ).fetchone()
+                )
                 if int(count_row["n"]) >= int(task["people_needed"]):
                     raise TaskCapacityError("task is full")
 
@@ -923,12 +935,13 @@ def _plan_edit(
         value = changes.people_needed
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise TaskStateError("INVALID_PEOPLE_NEEDED")
-        count_row = connection.execute(
-            "SELECT COUNT(*) AS n FROM task_assignee WHERE task_id = ?"
-            " AND agreement = 'ACCEPTED' AND cancelled = 0",
-            (task_id,),
-        ).fetchone()
-        assert count_row is not None
+        count_row = _require_count_row(
+            connection.execute(
+                "SELECT COUNT(*) AS n FROM task_assignee WHERE task_id = ?"
+                " AND agreement = 'ACCEPTED' AND cancelled = 0",
+                (task_id,),
+            ).fetchone()
+        )
         if value < int(count_row["n"]):
             raise TaskStateError("CAPACITY_BELOW_ACCEPTED")
         current = task["people_needed"]

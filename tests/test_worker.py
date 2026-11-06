@@ -10,6 +10,7 @@ repeated tick is idempotent.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -472,6 +473,33 @@ def test_worker_restart_replays_durable_state_without_duplicates(
         assert second.execute("SELECT COUNT(*) FROM bucket").fetchone()[0] == 1
     finally:
         second.close()
+
+
+def test_worker_failure_log_records_type_and_frames_but_not_the_message(
+    conn: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    token = "Bot MTIzNDU2Nzg5MDEyMzQ1Njc4.GaBsCd." + "x" * 30
+    body = "meet me at the north gate at seven"
+
+    def tick(now: str) -> None:
+        raise RuntimeError(f"token={token} content={body}")
+
+    stop = RecordingStopEvent([True])
+    with caplog.at_level(logging.ERROR):
+        run_worker(
+            conn,
+            tick=tick,
+            stop_event=stop,
+            interval_seconds=2.0,
+        )
+
+    text = caplog.text
+    assert "RuntimeError" in text
+    assert token not in text
+    assert body not in text
+    assert "test_worker.py:" in text
+    assert "tick" in text
+    assert "run_worker" in text
 
 
 # --- worker configuration (NFR-MNT-01) --------------------------------------

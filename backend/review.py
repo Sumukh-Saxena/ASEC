@@ -347,6 +347,34 @@ def _person_row(connection: sqlite3.Connection, person_id: int) -> sqlite3.Row |
     ).fetchone()
 
 
+def _require_person_id(person_id: int | None) -> int:
+    """Return a selected roster person id or raise (W9 H3, survives ``-O``)."""
+    if person_id is None:
+        raise InvalidEditError("a manual assignee requires a selected person")
+    return person_id
+
+
+def _require_responsible_vertical(vertical_id: int | None) -> int:
+    """Return the responsible vertical required by a cross-vertical task."""
+    if vertical_id is None:
+        raise ReviewError("a cross-vertical task requires a responsible vertical")
+    return vertical_id
+
+
+def _require_assignee_person(person_id: int | None) -> int:
+    """Return a resolved task-assignee person id or raise."""
+    if person_id is None:
+        raise ReviewError("a task assignee has no resolved person")
+    return person_id
+
+
+def _require_person_record(row: sqlite3.Row | None) -> sqlite3.Row:
+    """Return the acting person row or raise; the message carries no content."""
+    if row is None:
+        raise ReviewError("the acting person record was not found")
+    return row
+
+
 def _require_active_actor(
     connection: sqlite3.Connection,
     actor_person_id: int,
@@ -710,8 +738,8 @@ def _resolve_assignee_text(
 def _manual_assignee(
     connection: sqlite3.Connection, selection: AssigneeSelection
 ) -> EffectiveAssignee:
-    assert selection.person_id is not None
-    person = _person_row(connection, selection.person_id)
+    person_id = _require_person_id(selection.person_id)
+    person = _person_row(connection, person_id)
     if person is None:
         raise InvalidEditError(f"unknown roster person {selection.person_id}")
     text = selection.text.strip()
@@ -720,7 +748,7 @@ def _manual_assignee(
     return EffectiveAssignee(
         assignee_text=text,
         resolution="RESOLVED",
-        person_id=selection.person_id,
+        person_id=person_id,
         resolved_via="MANUAL",
     )
 
@@ -1476,7 +1504,9 @@ def _materialize_task(
     recipients: tuple[int, ...] = ()
     head_recipients: tuple[int, ...] = ()
     if cross_vertical:
-        assert responsible_vertical_id is not None
+        responsible_vertical_id = _require_responsible_vertical(
+            responsible_vertical_id
+        )
         if sender_role == "AH":
             approval_state = "PENDING"
             recipients = _approval_recipient_ids(
@@ -1517,15 +1547,14 @@ def _materialize_task(
     task_id = int(cursor.lastrowid or 0)
     assignees = _collapse_assignees(draft.assignees)
     for assignee in assignees:
-        assert assignee.person_id is not None
+        person_id = _require_assignee_person(assignee.person_id)
         connection.execute(
             "INSERT INTO task_assignee (task_id, person_id, agreement,"
             " agreed_at, work_status, cancelled, added_at)"
             " VALUES (?, ?, 'AWAITING', NULL, 'NOT_STARTED', 0, ?)",
-            (task_id, assignee.person_id, now),
+            (task_id, person_id, now),
         )
-    actor = _person_row(connection, actor_person_id)
-    assert actor is not None
+    actor = _require_person_record(_person_row(connection, actor_person_id))
     connection.execute(
         "INSERT INTO task_history (task_id, field_name, old_value, new_value,"
         " changed_at, actor_person_id, actor_role, actor_vertical_id, reason)"
@@ -1554,7 +1583,9 @@ def _materialize_task(
 
     approval_request_id: int | None = None
     if cross_vertical and approval_state == "PENDING":
-        assert responsible_vertical_id is not None
+        responsible_vertical_id = _require_responsible_vertical(
+            responsible_vertical_id
+        )
         cursor = connection.execute(
             "INSERT INTO approval_request (task_id, requested_by,"
             " request_message, created_at) VALUES (?, ?, ?, ?)",
@@ -1599,14 +1630,14 @@ def _materialize_task(
     hidden = approval_state == "PENDING"
     if not hidden:
         for assignee in assignees:
-            assert assignee.person_id is not None
+            person_id = _require_assignee_person(assignee.person_id)
             staged += int(
                 _insert_notification(
                     connection,
                     event_type=EVENT_TASK_ASSIGNED,
-                    recipient_person_id=assignee.person_id,
+                    recipient_person_id=person_id,
                     dedupe_key=task_assignee_key(
-                        EVENT_TASK_ASSIGNED, task_id, assignee.person_id
+                        EVENT_TASK_ASSIGNED, task_id, person_id
                     ),
                     task_id=task_id,
                     created_at=now,

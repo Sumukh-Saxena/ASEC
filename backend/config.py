@@ -10,9 +10,11 @@ implement any domain configuration.
 
 from __future__ import annotations
 
+import calendar
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
 
 _SECRET_MARKERS = (
     "TOKEN",
@@ -364,3 +366,136 @@ def _discord_id_set(
             )
         values.add(item)
     return frozenset(values)
+
+
+#: W9 H4: SQLite busy timeout used when a connection is opened. The default is
+#: the previous fixed 5000 ms; it is now configuration and validated.
+SQLITE_BUSY_TIMEOUT_KEY = "SQLITE_BUSY_TIMEOUT_MS"
+DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000
+
+
+@dataclass(frozen=True)
+class SqliteSettings:
+    """Validated SQLite connection settings."""
+
+    busy_timeout_ms: int = DEFAULT_SQLITE_BUSY_TIMEOUT_MS
+
+
+def load_sqlite_settings(config: Config) -> SqliteSettings:
+    """Build :class:`SqliteSettings`; a non-positive timeout is rejected."""
+    return SqliteSettings(
+        busy_timeout_ms=_positive_int(
+            config, SQLITE_BUSY_TIMEOUT_KEY, DEFAULT_SQLITE_BUSY_TIMEOUT_MS
+        )
+    )
+
+
+#: W9 H1: the ``asec`` logging namespace is configured from the environment.
+#: ``LOG_LEVEL`` defaults to INFO and is validated; ``LOG_FILE`` is optional and
+#: turns on the rotating file handler. Neither key holds a secret.
+LOG_LEVEL_KEY = "LOG_LEVEL"
+LOG_FILE_KEY = "LOG_FILE"
+DEFAULT_LOG_LEVEL = "INFO"
+_VALID_LOG_LEVELS = frozenset(
+    {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+)
+
+
+@dataclass(frozen=True)
+class LoggingSettings:
+    """Validated logging configuration for the ``asec`` logger namespace."""
+
+    level: str = DEFAULT_LOG_LEVEL
+    log_file: str | None = None
+
+
+def load_logging_settings(config: Config) -> LoggingSettings:
+    """Build :class:`LoggingSettings`; an unknown level is a configuration error."""
+    raw_level = config.get(LOG_LEVEL_KEY)
+    level = DEFAULT_LOG_LEVEL if raw_level is None else raw_level.strip().upper()
+    if level == "":
+        level = DEFAULT_LOG_LEVEL
+    if level not in _VALID_LOG_LEVELS:
+        raise ConfigError(
+            f"{LOG_LEVEL_KEY} must be one of"
+            f" {', '.join(sorted(_VALID_LOG_LEVELS))}, got {raw_level!r}"
+        )
+    raw_file = config.get(LOG_FILE_KEY)
+    log_file = None if raw_file is None or raw_file.strip() == "" else raw_file.strip()
+    return LoggingSettings(level=level, log_file=log_file)
+
+
+#: W9 H6 (SRS DR-07): retention runs from the festival end date the Admin
+#: records. This is configuration only; no purge code exists yet.
+FESTIVAL_END_DATE_KEY = "FESTIVAL_END_DATE"
+RETENTION_MONTHS_KEY = "RETENTION_MONTHS"
+DEFAULT_RETENTION_MONTHS = 3
+
+
+@dataclass(frozen=True)
+class RetentionSettings:
+    """Validated retention inputs: unset festival end and calendar months."""
+
+    festival_end_date: date | None = None
+    retention_months: int = DEFAULT_RETENTION_MONTHS
+
+
+def load_retention_settings(config: Config) -> RetentionSettings:
+    """Build :class:`RetentionSettings`; invalid dates or months are rejected."""
+    raw_date = config.get(FESTIVAL_END_DATE_KEY)
+    festival_end: date | None = None
+    if raw_date is not None and raw_date.strip() != "":
+        try:
+            festival_end = date.fromisoformat(raw_date.strip())
+        except ValueError as error:
+            raise ConfigError(
+                f"{FESTIVAL_END_DATE_KEY} must be an ISO date (YYYY-MM-DD),"
+                f" got {raw_date!r}"
+            ) from error
+    raw_months = config.get(RETENTION_MONTHS_KEY)
+    months = DEFAULT_RETENTION_MONTHS
+    if raw_months is not None and raw_months.strip() != "":
+        try:
+            months = int(raw_months.strip())
+        except ValueError as error:
+            raise ConfigError(
+                f"{RETENTION_MONTHS_KEY} must be a positive integer,"
+                f" got {raw_months!r}"
+            ) from error
+        if months < 1:
+            raise ConfigError(
+                f"{RETENTION_MONTHS_KEY} must be a positive integer,"
+                f" got {raw_months!r}"
+            )
+    return RetentionSettings(festival_end_date=festival_end, retention_months=months)
+
+
+def retention_date(festival_end: date | None, months: int) -> date:
+    """Return the retention date ``months`` calendar months after ``festival_end``.
+
+    A day that does not exist in the target month is clamped to that month's
+    last day (for example 30 November + 3 months = 28 February, or 29 February
+    in a leap year). The function is pure: it deletes nothing and reads no clock.
+    """
+    if festival_end is None:
+        raise ValueError("festival_end is required to compute a retention date")
+    if isinstance(months, bool) or not isinstance(months, int) or months < 1:
+        raise ValueError(f"months must be a positive integer, got {months!r}")
+    month_index = festival_end.month - 1 + months
+    year = festival_end.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(festival_end.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def retention_due(
+    today: date, festival_end: date | None, months: int
+) -> bool:
+    """Return True once ``today`` is at or after the retention date.
+
+    An unset festival end means retention has not started. This is a pure
+    predicate; the purge procedure itself is not part of the MVP.
+    """
+    if festival_end is None:
+        return False
+    return today >= retention_date(festival_end, months)

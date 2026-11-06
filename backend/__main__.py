@@ -22,6 +22,7 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 
 from backend import __version__
 from backend.alerts import LogAlertSender
@@ -31,6 +32,7 @@ from backend.config import (
     ConfigError,
     load_config,
     load_discord_settings,
+    load_sqlite_settings,
     load_worker_settings,
 )
 from backend.db.connection import connect
@@ -42,7 +44,9 @@ from backend.discord_adapter import (
     check_live_readiness,
     check_live_start,
 )
+from backend.group_import import GroupImportError, import_groups_from_file
 from backend.ingest import ingest_message
+from backend.logging_setup import setup_logging
 from backend.worker import LiveTickResult, run_live_tick
 
 logger = logging.getLogger("asec.cli")
@@ -60,6 +64,11 @@ _USAGE = (
 _LIVE_USAGE = (
     "usage: python -m backend run-live [--db <database path>]"
     " [--interval-seconds <positive number>] [--once]"
+)
+
+_IMPORT_GROUPS_USAGE = (
+    "usage: python -m backend import-groups --db <database path>"
+    " --file <csv path> [--confirm]"
 )
 
 
@@ -93,8 +102,6 @@ def _is_production_path(config: Config, database: str) -> bool:
     production = config.get(PRODUCTION_DB_PATH_KEY)
     if production is None or production.strip() == "":
         return False
-    from pathlib import Path
-
     return Path(database).resolve() == Path(production.strip()).resolve()
 
 
@@ -114,14 +121,16 @@ def _run_discord_smoke(
         )
         return 2
     try:
+        setup_logging(config)
         token = config.require(DISCORD_BOT_TOKEN_KEY)
         settings = load_discord_settings(config)
+        sqlite_settings = load_sqlite_settings(config)
     except ConfigError as error:
         print(str(error), file=sys.stderr)
         return 2
 
     source = DiscordRestSource(token=token, transport=transport, settings=settings)
-    connection = connect(database)
+    connection = connect(database, busy_timeout_ms=sqlite_settings.busy_timeout_ms)
     try:
         apply_migrations(connection)
         result = source.poll_latest_page(
@@ -260,9 +269,11 @@ def _run_live(
             return 2
         database = production.strip()
     try:
+        setup_logging(config)
         token = config.require(DISCORD_BOT_TOKEN_KEY)
         discord_settings = load_discord_settings(config)
         worker_settings = load_worker_settings(config)
+        sqlite_settings = load_sqlite_settings(config)
     except ConfigError as error:
         print(str(error), file=sys.stderr)
         return 2
@@ -272,7 +283,7 @@ def _run_live(
     source = DiscordRestSource(
         token=token, transport=transport, settings=discord_settings
     )
-    connection = connect(database)
+    connection = connect(database, busy_timeout_ms=sqlite_settings.busy_timeout_ms)
     try:
         apply_migrations(connection)
         if _has_replay_clock(connection):
@@ -281,9 +292,14 @@ def _run_live(
                 file=sys.stderr,
             )
             return 2
-        for _group_id, channel_id in _mapped_channels(connection):
+        mapped = _mapped_channels(connection)
+        if not mapped:
+            print(
+                "warning: source_groups=0; no channels to poll",
+                file=sys.stderr,
+            )
+        for _group_id, channel_id in mapped:
             check_live_start(source, channel_id=channel_id)
-
         failures: dict[int, int] = {}
         sender = LogAlertSender()
 
@@ -317,6 +333,74 @@ def _run_live(
         connection.close()
 
 
+def _parse_import_groups_args(
+    args: Sequence[str],
+) -> tuple[str, str, bool] | None:
+    database: str | None = None
+    source_file: str | None = None
+    confirm = False
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if option in ("--db", "--file"):
+            if index + 1 >= len(args):
+                return None
+            value = args[index + 1].strip()
+            if value == "":
+                return None
+            if option == "--db":
+                database = value
+            else:
+                source_file = value
+            index += 2
+            continue
+        if option == "--confirm":
+            confirm = True
+            index += 1
+            continue
+        return None
+    if database is None or source_file is None:
+        return None
+    return database, source_file, confirm
+
+
+def _run_import_groups(args: Sequence[str], *, config: Config) -> int:
+    parsed = _parse_import_groups_args(args)
+    if parsed is None:
+        print(_IMPORT_GROUPS_USAGE, file=sys.stderr)
+        return 2
+    database, source_file, confirm = parsed
+    if not confirm and _is_production_path(config, database):
+        print(
+            "refusing to run import-groups against the production database path"
+            f" configured in {PRODUCTION_DB_PATH_KEY} without --confirm",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        setup_logging(config)
+        sqlite_settings = load_sqlite_settings(config)
+    except ConfigError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+
+    connection = connect(database, busy_timeout_ms=sqlite_settings.busy_timeout_ms)
+    try:
+        apply_migrations(connection)
+        counts = import_groups_from_file(connection, Path(source_file))
+    except (GroupImportError, OSError, sqlite3.Error) as error:
+        print(f"import-groups failed: {error}", file=sys.stderr)
+        return 2
+    finally:
+        connection.close()
+
+    print(
+        f"added={counts.added} unchanged={counts.unchanged}"
+        f" conflicts={counts.conflicts}"
+    )
+    return 2 if counts.conflicts else 0
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -346,6 +430,10 @@ def main(
             transport=transport,
             sleep=time.sleep if sleep is None else sleep,
             now=_utc_now if now is None else now,
+        )
+    if args and args[0] == "import-groups":
+        return _run_import_groups(
+            args[1:], config=load_config() if config is None else config
         )
     print(
         "ASEC backend (Phase 0). Use --version, 'discord-smoke' or 'run-live'.",
