@@ -24,6 +24,7 @@ import sqlite3
 
 import pytest
 
+from backend.ai.http_client import assert_safe_request
 from backend.ai_context import (
     MentionHandles,
     bucket_message_entries,
@@ -33,6 +34,7 @@ from backend.ai_context import (
 )
 from backend.db.connection import connect
 from backend.db.migrations import apply_migrations
+from backend.relevance import ContextMessage, RelevanceRequest
 
 
 @pytest.fixture()
@@ -346,3 +348,40 @@ def test_bucket_entries_of_empty_bucket_are_empty(
     entries, mapping = bucket_message_entries(conn, bucket_id)
     assert entries == ()
     assert mapping == ()
+
+
+def test_request_guard_agrees_with_phase7_handles(conn: sqlite3.Connection) -> None:
+    """Plan §7: the guard accepts exactly the request copy Phase 7 builds."""
+    _group(conn, 1)
+    bucket_id = _bucket(conn, 1)
+    mid = _message(conn, 1, 1, content="call 98765 43210 <@2002>")
+    _membership(conn, bucket_id, mid, 1)
+    entries, mapping = bucket_message_entries(conn, bucket_id)
+
+    request = RelevanceRequest(
+        bucket_id=bucket_id,
+        group_handle="g1",
+        vertical_name=None,
+        instructions="CLASSIFICATION_POLICY: doubt policy",
+        messages=tuple(
+            ContextMessage(
+                message_id=entry.message_id,
+                sender_person_id=entry.sender_person_id,
+                sender_name=entry.sender_name,
+                event_timestamp=entry.event_timestamp,
+                reply_to_message_id=entry.reply_to_message_id,
+                masked_content=entry.masked_content,
+                mention_handles=entry.mention_handles,
+            )
+            for entry in entries
+        ),
+    )
+
+    safe = assert_safe_request(request)
+
+    assert safe == request
+    assert mapping == (("@m1", "2002"),)
+    assert safe.group_handle == "g1"
+    assert safe.messages[0].mention_handles == ("@m1",)
+    assert safe.messages[0].masked_content == "call [PHONE] @m1"
+    assert "<@" not in str(safe.messages[0].masked_content)
