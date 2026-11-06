@@ -799,3 +799,211 @@ left behind.
   error, not a silent skip.
 - **PB-7** Limit `predecessor_bucket_id` to late buckets (the SRS only asks for that
   link) and drop the fallback chain. Do inside the PB-1 work.
+
+---
+
+## 15. Implementation record
+
+Filled by W7 on 2026-11-06 against HEAD `d408d5e` (Phase 9 C9). This record is the single
+Phase 9 implementation record; it covers W1-W6, W8a, W8b, W9 and the W7 battery. No code
+was changed by W7: the mutation battery was applied and reverted file by file, and only
+`docs/PHASE9_PLAN.md` (this section) and `docs/PLANNING_PROGRESS.md` (one status line) were
+written.
+
+### 15.1 Scope and files actually delivered in Phase 9
+
+Phase 9 changed these files (from `git diff --name-status fbf5daa..HEAD`; the SRS and other
+docs rows are the earlier owner-approved amendments carried in the same commit range):
+
+| Area | Files |
+|---|---|
+| Migrations | `backend/db/migrations/0019_source_message_time_basis.sql`, `0020_group_clock.sql`, `0021_replay_batches.sql` (no migration after 0021) |
+| Pipeline | `backend/bucketing.py` (PB-2 effective time, settle-then-assign, closure at `e + C`, PB-7 one-hop link), `backend/clock.py` (new), `backend/worker.py` (new), `backend/orchestration.py` (tick wiring) |
+| Replay | `backend/replay.py` (new) |
+| Discord | `backend/discord_adapter.py` (new), `backend/alerts.py` (new) |
+| Parts | `backend/relevance.py`, `backend/proposals.py`, `backend/config.py` |
+| Operations | `backend/logging_setup.py` (new), `backend/group_import.py` (new), `backend/db/connection.py`, `backend/__main__.py` |
+| Tests | `tests/conftest.py`, `test_group_clock.py`, `test_bucketing_clock.py`, `test_worker.py`, `test_replay.py`, `test_discord_adapter.py`, `test_bucket_partitioning.py`, `test_live_orchestration.py`, `test_run_live.py`, `test_logging_setup.py`, `test_retention_config.py`, `test_import_groups.py`, `test_runtime_guards.py`, `test_sqlite_contention.py`, `test_migrations_time_basis.py`, `test_migrations_group_clock.py`, `test_migrations_replay_batches.py`; extended `test_bucketing_service.py`, `test_orchestration_service.py`, `test_relevance_service.py`, `test_proposal_service.py`, `test_config.py`, `test_db_migrations.py` |
+
+Requirement coverage: FR-ING-01/08, FR-BKT-01/04/05/06/07/08/11, NFR-REL-04/05/06,
+NFR-PERF-02, NFR-MNT-01/02, AC-13, plus BR-05 regression (buckets remain processing
+boundaries, not conversations).
+
+### 15.2 Real test totals and DoD battery (actual observed output)
+
+| Check | Result |
+|---|---|
+| `.venv\Scripts\python.exe -m pytest` | **1432 passed in 312.64s (0:05:12)**, exit 0 |
+| `.venv\Scripts\python.exe -m ruff check .` | **All checks passed!**, exit 0 |
+| `.venv\Scripts\python.exe -m mypy` | **Success: no issues found in 26 source files**, exit 0 |
+| `.venv\Scripts\python.exe -m backend --version` | **0.0.1**, exit 0 |
+| `pytest tests/test_group_clock.py tests/test_bucketing_clock.py tests/test_bucket_partitioning.py` | **46 passed in 3.71s** |
+| `pytest tests/test_worker.py tests/test_replay.py tests/test_discord_adapter.py` | **99 passed in 4.86s** |
+| `pytest tests/test_bucketing_service.py tests/test_orchestration_service.py tests/test_relevance_service.py tests/test_proposal_service.py` | **281 passed in 176.82s (0:02:56)** |
+| Fresh DB (disposable file outside the repo) | `first_applied: [1..21]`; `reapply_applied: []`; versions `1..21`, count 21; `foreign_key_check: []`; `integrity_check: [('ok',)]`; `source_group_clock_rows: 0`; `replay_batch_rows: 0` |
+| `git diff --check` | exit 0, no output |
+| `git status --short` | empty; nothing staged |
+
+### 15.3 Mutation battery (15/15 killed, exact red and restore)
+
+Pre-mutation SHA-256 (all restores matched exactly):
+
+- `backend/bucketing.py` `CECE181BD93B006F6C4B23DE4298EE5719D7AEB0D3E211D33F5DDD3B0DC09F8B`
+- `backend/clock.py` `F49C4B94363E2BC02E2BEA944F3320089C0F45BF3F28481A2243CB04CDB9F50A`
+- `backend/replay.py` `74EE98053865DDE5A9DE2756D010F32BA08119F156112EE21D6C6D553C0F31AB`
+- `backend/relevance.py` `EE39C9598509C9542D33849D19064F86EE4D9C66CB0798A8739100186A754D41`
+- `backend/discord_adapter.py` `642C54A6E85F36252B4422B45F6AC9F3B57C27A44050B5DCC84ADE0922670B23`
+- `backend/worker.py` `5ECB9ADC1F40019598EC6BB921ED77685D1CDD67977C2115FF089FF74E26FCA7`
+- `backend/logging_setup.py` `077BE62018DB58BDDDB3768D716D15A850ED6883F21D8854D07877CE1BDFFB34`
+
+| # | Mutation | Targeted test | Observed RED (restored to the hash above) |
+|---|---|---|---|
+| 1 | Remove the `t + C <= clock` settle filter (`bucketing.py:545`) | `test_bucketing_clock.py::test_unsettled_messages_wait_for_the_next_tick` | `assert ((1, 1), (2, 1)) == ()` |
+| 2 | Close at `e` instead of `e + C` (`bucketing.py:731`) | `test_group_clock.py::test_closure_boundary_is_inclusive_at_e_plus_c` | `assert (1,) == ()` at the `just_before` advance |
+| 3 | Read the wall clock inside assignment (`bucketing.py:571`) | `test_bucketing_clock.py::test_unsettled_messages_wait_for_the_next_tick` | `assert ((1, 1), (2, 1)) == ()`; the named worker restart test **passed** because that message was already settled, so the settle test is the real guard (recorded, not a survivor) |
+| 4 | Allow a clock-mode switch (`clock.py:99`) | `test_group_clock.py::test_mode_is_locked_after_the_first_write` | `Failed: DID NOT RAISE ClockModeError` |
+| 5 | Restore the predecessor fallback chain (`bucketing.py:417-420`) | `test_bucketing_clock.py::test_late_message_without_a_qualified_closed_bucket_links_null` | `assert 1 is None` |
+| 6 | Skip a naive-event message instead of receipt fallback (`bucketing.py:245-251`) | `test_bucketing_service.py::test_unusable_event_time_uses_receipt_time` | `assert [] == [1]` (all three parameter cases failed) |
+| 7 | Drop one message in the partition merge (`relevance.py:512-517`) | `test_bucket_partitioning.py::test_relevance_parts_cover_every_member_exactly_once` | `assert [2, 2] == [2, 2, 1]` |
+| 8 | Put the Discord token into an adapter error (`discord_adapter.py:421-424`) | `test_discord_adapter.py::test_5xx_exhausts_retries_and_raises_without_leaking_the_token` | `AssertionError: assert 'test-token-123' not in ...` |
+| 9 | Make derived replay IDs non-deterministic (`replay.py:330-335`) | `test_replay.py::test_reimport_is_idempotent_and_reports_duplicates` | `assert 3 == 0` inserted on re-import |
+| 10 | Tick reuses an in-memory assignment queue (`worker.py:185`) | `test_worker.py::test_worker_restart_replays_durable_state_without_duplicates` | `assert 1 == 0` (`restart.assigned`) |
+| M11 | Remove the poll bound; advance every group with wall time (`worker.py:165`) | `test_live_orchestration.py::test_stalled_poll_does_not_advance_or_close` | clock `00:01:40` instead of `00:01:38` |
+| M12 | Accept every Discord message type (`discord_adapter.py:513-515`) | `test_discord_adapter.py::test_only_default_and_reply_message_types_are_ingested` | `assert 0 == 2` (`skipped_system`) |
+| M13 | Remove the bot/webhook author filter (`discord_adapter.py:524`) | `test_discord_adapter.py::test_bot_and_webhook_authors_are_skipped` | `assert 0 == 2` (`skipped_bot`) |
+| M14 | Send one EMPTY_CONTENT alert per message (`discord_adapter.py:257-271`) | `test_discord_adapter.py::test_empty_content_alerts_are_aggregated_per_poll_per_channel` | `assert 3 == 1` (alerts) |
+| M15 | Remove the redaction filter from the log handlers (`logging_setup.py:130`) | `test_logging_setup.py::test_token_and_message_body_never_appear_in_file_output` | token and body appeared verbatim in the log file |
+
+No mutation survived. Mutation 3's plan label ("restart test red") did not match the
+observed guard; the mutation was still killed by the settle test, and this difference is
+recorded rather than hidden.
+
+### 15.4 Read-only audits (plan §10 plus the W7 additions)
+
+| Audit | Evidence and result |
+|---|---|
+| Token / `Bot ` grep | The only token source is `Config.require(DISCORD_BOT_TOKEN_KEY)` (`backend/__main__.py:125`, `:273`); it reaches only `Authorization: f"Bot {self._token}"` (`backend/discord_adapter.py:386`). The empty-token guard is `discord_adapter.py:162`. No literal token, no token in an error or log. |
+| `_predecessor` grep in `bucketing.py` | Only `_late_predecessor` (`bucketing.py:409`) and its single call (`:611`); it returns the latest CLOSED bucket with `end <= t`, else `None`. One hop only, no chain. |
+| `sleep(` in `worker.py` / `replay.py` | No matches. |
+| `git status --short` | Empty after every mutation restore and at the end. |
+| Additional (a): logger calls must not format content, user ids or a token | Complete logger-call inventory: `backend/alerts.py:60` (structured rule/severity/counts/time/operator text only), `backend/worker.py:241` (exception type plus frames), `backend/worker.py:346` (group id, channel id, exception type), `backend/__main__.py:227` (counts only). None formats message content, a Discord user id or a token. |
+| Additional (c): task/task_assignee SQL only in the three allowed modules | All matches are in `backend/tasks.py`, `backend/review.py` and `backend/approvals.py` (`approvals.py:131,330,472`; `review.py:1435,1528,1552`; `tasks.py:269-1236`). No other module selects or writes either table. |
+
+**Additional (b), wall-clock call sites - finding, reported not hidden.** Literal audit (b)
+("every `datetime.now`/`time.sleep` call site is at the worker/CLI/adapter boundary") is
+**not fully true of the existing tree**. Boundary uses are `worker.py:458`,
+`__main__.py:405`, CLI sleeps `__main__.py:326,431`, adapter `discord_adapter.py:158,643`,
+receipt stamping `ingest.py:268`, SQLite retry `db/connection.py:116` and migration
+bookkeeping `db/migrations.py:223`. Service modules also contain backend-stamped timestamp
+helpers: `approvals.py:140`, `authorization.py:44`, `bucketing.py:230` (used only at `:776`
+for the progress `updated_at`), `proposals.py:417`, `relevance.py:377`, `review.py:315`,
+`tasks.py:488`, and Phase 9's `replay.py:596` (batch bookkeeping only). Git blame shows the
+first eight predate Phase 9 (2026-10-19 to 2026-11-02); none is used to make a bucket,
+clock, settle, closure or late-link decision. Those decisions take an injected `now`
+(`run_pipeline_tick(now=...)`, `advance_group_clock(now=...)`) or the durable clock
+(`assign_messages`); mutation 3 confirms a wall-clock substitution is caught. This is
+carried forward as a literal-audit deviation, not claimed as clean.
+
+### 15.5 Deviations and carry-forwards (from `PHASE9_PROGRESS.md` and `KNOWN_GAPS.md`)
+
+1. **Extra late rule (owner instruction 2026-11-03).** A message is also late when it is
+   earlier than the current OPEN bucket's start (`bucketing.py:594-595`). PB-1's approved
+   text names only the closed-bucket condition, so this extra rule is a recorded deviation,
+   deliberately retained.
+2. **R-1 test correction.** The assertion matches plan §4.5 and PB-1: at the import
+   boundary only `t + C <= clock` is assigned; the newest message settles after the next
+   clock advance; both are still assigned with `time_basis='EVENT'`.
+3. **Fixed-offset time-zone fallback.** Windows carries no tz database and the project has
+   no runtime dependency, so `replay.py:70-75` supplies fixed offsets for `UTC`,
+   `Etc/UTC`, `Asia/Kolkata` and `Asia/Calcutta` (all DST-free); other zones resolve through
+   `zoneinfo` where available and are refused as unknown otherwise.
+4. **`{"parts": [...]}` artifact and raw-response shape.** 0013 relevance artifacts are
+   always `{"parts": [...]}` (hash over the stored artifact). 0014 proposal artifacts store
+   `{"parts": [...]}` only when an attempt used more than one part; a single-part attempt
+   keeps the exact Phase 5 text. Proposal raw-response retention likewise keeps the exact
+   single-part text and stores `{"parts": [...]}` only for multi-part attempts; Tier-2
+   rejection rows carry `part_index`.
+5. **Which stage hashes which text, and the A5 finding.** Relevance hashes the exact stored
+   masked request artifact (`relevance.py:450-452`, `:878-889`), so it is recomputable from
+   storage. Proposals hash the dispatch form **without** `mention_handle_map`
+   (`proposals.py:1623-1630`) while the stored artifact **includes** it, so the proposal
+   request hash cannot be recomputed from storage. The proposal response hash covers the
+   full masked text before truncation; `raw_response` may be truncated, so the response hash
+   also cannot always be recomputed. This is the W8 A5 finding, repeated in `KNOWN_GAPS.md`.
+6. **64 KB cap and truncation.** `MAX_RAW_RESPONSE_BYTES = 65536` (`proposals.py:113`);
+   `_process_raw_text` masks, hashes the full text, then truncates to 64 KB with
+   `raw_response_truncated = 1` (`proposals.py:1183-1205`). Truncation is on a character
+   boundary; the hash is over the pre-truncation text.
+7. **Reactions deferred (FR-ING-07).** `DiscordRestSource.fetch_reactions` is a documented
+   `NotImplementedError` stub and no poll path calls it. Reactions embedded in a payload are
+   preserved verbatim in `raw_metadata`; replay stores reaction evidence from the export.
+   REST polling cannot see reaction removals.
+8. **EMPTY_CONTENT counted and alerted, not stored as a flag.** Empty content is stored as
+   NULL per 0002, counted in the poll result and alerted once per poll/channel. There is no
+   persistent flag column and migration 0022 was deliberately not added; "flagged" is the
+   count plus alert.
+9. **`skipped_system`, `skipped_bot`, `skipped_sticker`.** Only Discord message types 0 and
+   19 enter ingestion; system types are counted as `skipped_system`. Bot/webhook authors are
+   counted as `skipped_bot` unless their id is in the validated
+   `DISCORD_ALLOWED_BOT_USER_IDS` allow list; sticker-only messages are counted as
+   `skipped_sticker`. Skipped payloads are never normalized, stored or alerted.
+10. **`run-live` polls only mapped groups; `import-groups` exists.** `run-live` reads
+    `source_group` rows with a Discord channel and polls only those; unmapped groups are not
+    polled and one `source_groups=0` warning is printed when none is mapped. Mapping is
+    provided by `python -m backend import-groups --db <path> --file <csv> [--confirm]`
+    (`backend/group_import.py`), which validates the CSV all-or-nothing, is idempotent and
+    refuses the production path unless `--confirm`. There is no scheduler.
+11. **Logger renamed to `asec.worker`.** The worker logger is
+    `logging.getLogger("asec.worker")` (`worker.py:64`); the earlier draft name was replaced
+    before C9.
+12. **Bucketing test fixtures and SRS §10.1.** `tests/test_bucketing_service.py` was aligned
+    to SRS §10.1 (W=15, G=5, M=30, C=2) in commit `e7450b6` and `_PARAMS_101` pins those
+    values. The Phase 9 clock/worker/replay/ingestion/orchestration fixtures still use a
+    distinct local `BucketParams(10, 5, 30, 3)` set, so alignment is partial and remains a
+    carry-forward; no SRS-scoped case was rewritten.
+13. **W8a, W8b and W9 are owner-added workstreams** (plan §7/§8). W8a added the
+    poll-bounded clock (`min(now, polled_at - POLL_SAFETY_MARGIN_SECONDS)`, default 2,
+    validated) and live orchestration; W8b added `run-live`, `ASEC_DB_PATH` refusal, the
+    type/bot/sticker filters, aggregated EMPTY_CONTENT alerts and the skip counts; W9 added
+    logging with rotating file and redaction, tick-failure frames, replacement of runtime
+    asserts by domain errors, SQLite busy retry, `FESTIVAL_END_DATE`/`RETENTION_MONTHS`
+    configuration only, and `import-groups`. The W5 note that the clock advance was not
+    bounded by the last successful poll was fixed by W8a.
+14. **Other W5/W6/C8/C9 carry-forwards.** `alerts.py` was added because `AlertSender` did
+    not exist; `check_live_readiness`/`check_live_start` live in `discord_adapter.py` because
+    no health/startup module existed; the smoke command fetches one page, prints counts only
+    and refuses the production path. Retention is configuration only, with no purge code.
+    Runtime `assert` statements in `backend/` were replaced by domain-error guards, and a
+    subprocess test under `python -O` confirms the domain error. The SQLite writer retries
+    only a locked `BEGIN IMMEDIATE` three times at 50/100/200 ms and never after a statement
+    has run. `KNOWN_GAPS.md` entries "no live loop until W8" and "no logging until W9" are
+    now closed; the remaining entries are reactions, the EMPTY_CONTENT flag, the fixed-offset
+    fallback and the A5 hash asymmetry.
+
+### 15.6 Owner-run evidence and live-verification status
+
+- **Owner-run smoke test (owner-reported, not agent-observed):**
+  `fetched=77 stored=77 duplicates=0 empty_content=3 with_mentions=12 with_reply=5`. This
+  run predates the type, bot and sticker filters, so those five counts are not a post-filter
+  expectation; W8b's smoke output adds `skipped_system`, `skipped_bot` and `skipped_sticker`
+  and treats `fetched` as the raw Discord count.
+- **Owner-run live dry run of `run-live`: not yet recorded.** No `run-live` dry-run result
+  exists in `docs/PHASE9_PROGRESS.md`, `docs/KNOWN_GAPS.md` or any other record reviewed for
+  this section. The offline suite exercises `run-live` with a fake transport; that is not a
+  live verification. Phase 9 is therefore **not claimed as fully verified live**; a real
+  `run-live` dry run against the owner-supplied test server/channel remains open.
+
+### 15.7 OWNER answers used, gaps and next step
+
+O9-1(a) stdlib REST polling with an injected transport; O9-2 the owner supplies the token,
+test server/channel and Message Content intent (owner-run smoke only); O9-3(a) 2 s interval,
+1-60 s backoff; O9-4 approved with the `sender_map`/`group_map` amendment, unmapped senders
+`UNKNOWN_SENDER`, deterministic derived IDs; O9-5(a) no clock seed, first caller sets the
+mode; O9-6(a) 40 relevance messages and 20 proposal candidates per part.
+
+Remaining gaps: reactions (FR-ING-07), no persistent EMPTY_CONTENT flag, the fixed-offset
+time-zone fallback, the A5 hash asymmetry, partial SRS §10.1 fixture alignment in the new
+Phase 9 tests, the literal audit (b) service timestamp helpers above, and the unrecorded
+owner `run-live` dry run. Suggested next step: owner runs `python -m backend run-live
+--db <scratch> --once` against the test server (token supplied only through the environment)
+and records the counts; no further code change is required for W7.
