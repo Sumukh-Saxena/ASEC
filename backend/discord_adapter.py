@@ -63,6 +63,23 @@ class Transport(Protocol):
     ) -> HttpResponse: ...
 
 
+class PostTransport(Protocol):
+    """Additive POST seam for the OTP DM sender (Phase 11 W5).
+
+    Polling only needs GET, so this stays separate from :class:`Transport`;
+    an injected fake implements only the method its caller uses.
+    """
+
+    def post(
+        self,
+        *,
+        url: str,
+        headers: Mapping[str, str],
+        body: bytes,
+        timeout: float,
+    ) -> HttpResponse: ...
+
+
 class DiscordSource(Protocol):
     """What ingestion needs from a Discord source (plan §4.7)."""
 
@@ -130,6 +147,31 @@ class UrllibTransport:
         self, *, url: str, headers: Mapping[str, str], timeout: float
     ) -> HttpResponse:
         request = urllib.request.Request(url, headers=dict(headers), method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return HttpResponse(
+                    status=int(response.status),
+                    headers=dict(response.headers),
+                    body=response.read(),
+                )
+        except urllib.error.HTTPError as error:
+            return HttpResponse(
+                status=int(error.code),
+                headers=dict(error.headers or {}),
+                body=error.read(),
+            )
+
+    def post(
+        self,
+        *,
+        url: str,
+        headers: Mapping[str, str],
+        body: bytes,
+        timeout: float,
+    ) -> HttpResponse:
+        request = urllib.request.Request(
+            url, data=body, headers=dict(headers), method="POST"
+        )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return HttpResponse(

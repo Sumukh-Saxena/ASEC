@@ -222,7 +222,7 @@ def test_0022_run_foreign_key_is_restrict(conn: sqlite3.Connection) -> None:
 def test_0022_fresh_apply_and_noop_reapply(tmp_path: Path) -> None:
     connection = connect(tmp_path / "fresh.db")
     try:
-        assert apply_migrations(connection) == list(range(1, 23))
+        assert apply_migrations(connection) == list(range(1, 24))
         assert apply_migrations(connection) == []
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

@@ -512,3 +512,161 @@ the suite, no secret in any attempt/row/report.
   are held in secure configuration and never exposed to users or logged in errors.
 - **NFR-SEC-03 (excerpt)** Phone numbers and message content are visible to a person only
   for people below them in the roster hierarchy.
+
+---
+
+## 15. Implementation record
+
+Executed 2026-11-09 as Phase 11 Session B (W5, W4, W6). Nothing was staged, committed or
+pushed. W1-W3 were already present in the working tree from Session A (C1-C3); this record
+covers the whole Phase 11 tree at the final checkpoint.
+
+### 15.1 Files actually changed
+
+| File | Status | Content |
+|---|---|---|
+| `backend/notification_delivery.py` | new (W1-W6) | Rendering, self-only list, read state, endpoint helpers, `deliver_pending`, announcement fan-out/sweep, `PushSender`, `OtpSender`, `RecordingOtpSender`, `DevelopmentOtpSender`, `DiscordDmOtpSender`, `OtpSenderNotConfigured`, `require_otp_sender`, `run_delivery_tick`. |
+| `backend/fcm_sender.py` | new (W4) | `FcmPushSender`, `TokenProvider`, lazy `GoogleServiceAccountTokenProvider`, `FcmTransport`/`UrllibFcmTransport`, HTTP v1 payload and response mapping, `PushProviderNotConfigured`. |
+| `backend/discord_adapter.py` | modified (W5, additive) | `PostTransport` protocol and `UrllibTransport.post`; the polling `Transport` protocol is unchanged. |
+| `backend/worker.py` | modified (W6, additive) | Optional `delivery_tick` callable on `run_live_tick`, called after `run_pipeline_tick`; delivery exceptions are logged and never escape the pipeline tick. |
+| `backend/config.py` | modified (Session A, W2) | `NotificationSettings` / `load_notification_settings` with O11-3 values; no new key was added in Session B. |
+| `backend/notification_events.py` | modified (Session A, W3) | `EVENT_ANNOUNCEMENT` and `announcement_key`. |
+| `backend/db/migrations/0023_push_endpoints.sql` | new (Session A, W1) | `push_endpoint` and `notification_read` exactly as plan section 5. |
+| `tests/test_otp_sender.py` | new (11 tests) | OTP protocol, DM channel/message, failed-DM shape, sanitisation, production refusal, unconfigured path. |
+| `tests/test_fcm_sender.py` | new (18 tests) | HTTP v1 payload/auth, 401/403 permanent, 429/5xx retry, malformed/timeout, lazy extra, no provider import. |
+| `tests/test_delivery_tick.py` | new (9 tests) | Sweep-before-deliver, configured batch/retry settings, explicit limit, SENDING recovery, zero-recipient sweep, assignee limitation, worker isolation. |
+| `tests/test_notification_rendering.py` | modified (+1 test) | `test_otp_code_has_no_in_app_renderer`. |
+| `docs/KNOWN_GAPS.md` | modified | Single-process rule, assignee naming, zero-recipient sweep, no OTP row, no live FCM/Discord verification, push extra not declared. |
+| `docs/PHASE11_PROGRESS.md` | modified | C4 and final checkpoint lines with real command output. |
+| `docs/PHASE11_PLAN.md` | modified | This section 15. |
+| `docs/PLANNING_PROGRESS.md` | modified | One Phase 11 status line. |
+| `pyproject.toml` | unchanged | The owner pin was blank, so no optional `push` extra was declared. |
+
+### 15.2 Real test totals and RED evidence
+
+| Check | Real output |
+|---|---|
+| Full suite, `.venv\Scripts\python.exe -m pytest` | **1623 passed in 313.03s (0:05:13)**, exit 0 |
+| `tests/test_notification_delivery.py tests/test_notification_rendering.py tests/test_notification_list.py` | **55 passed in 5.34s** |
+| `tests/test_announcement_fanout.py tests/test_push_endpoints.py tests/test_fcm_sender.py tests/test_otp_sender.py` | **52 passed in 2.96s** |
+| `tests/test_review_service.py tests/test_task_service.py tests/test_approval_service.py` | **192 passed in 20.01s** |
+| `tests/test_otp_sender.py` (W5 targeted) | **11 passed in 0.08s** |
+| `tests/test_fcm_sender.py` (W4 targeted) | **18 passed in 1.23s** |
+| `tests/test_delivery_tick.py` (W6 targeted) | **9 passed in 1.78s** |
+| `.venv\Scripts\python.exe -m ruff check .` | **All checks passed!** |
+| `.venv\Scripts\python.exe -m mypy` | **Success: no issues found in 31 source files** |
+| `.venv\Scripts\python.exe -m backend --version` | **0.0.1** |
+
+RED evidence was observed before each implementation:
+
+- W5: `ImportError: cannot import name 'DevelopmentOtpSender' from 'backend.notification_delivery'`.
+- W4: `ModuleNotFoundError: No module named 'backend.fcm_sender'`.
+- W6: `ImportError: cannot import name 'run_delivery_tick' from 'backend.notification_delivery'`.
+
+### 15.3 Mutation battery (15/15 killed, all restores hash-matched)
+
+Pre-mutation SHA-256 values: `backend/notification_delivery.py`
+`539B0B632B266985D99B2C61D69305FD73D3DAF6ABAD349B657DA7979D32E20D`;
+`backend/fcm_sender.py`
+`7D14FBBACB74281B3A70D690ECEFC180B4AC8023C82D145CA3E1300EB11359D1`;
+`backend/worker.py`
+`5C37986C4802A704A97C41EEC61CC51226BEDD8894B5AD9CCD860FD7851DF913`.
+Every restore printed `HASH_MATCH True` and the same SHA-256.
+
+| # | Mutation | Target test | Observed red |
+|---|---|---|---|
+| 1 | Insert a second notification row on retry | `test_transient_failure_retries_the_same_row_after_backoff` | `assert (1, 1, 0, 0) == (0, 0, 0, 0)` (duplicate row claimed) |
+| 2 | Let a delivery failure roll back the source change | `test_failed_delivery_does_not_roll_back_the_source_change` | `assert 'ROLLED_BACK' == 'clip the wires'` |
+| 3 | Include inactive recipients in fan-out | `test_inactive_members_are_excluded` | `assert 5 not in {1, 2, 3, 4, 5}` |
+| 4 | Read the dropped `audience_scope` | `test_vertical_audience_is_every_active_member` | `IndexError: No item with that key` |
+| 5 | Log the OTP code | `test_otp_code_and_bot_token_never_appear_in_repr_or_logs` | `'FAKE-OTP-CODE-123456'` found in `caplog.text` |
+| 6 | Return another person's notifications | `test_list_is_self_only` | `assert [2] == [1]` |
+| 7 | Render "accepted" for an awaiting assignee | `test_awaiting_assignee_is_never_rendered_as_accepted` | `'awaiting your response' in 'You accepted this task: ...'` failed |
+| 8 | Remove the max-attempt cap | `test_max_attempts_exhausts_the_row` | `assert 0 == 1` on `second.exhausted` |
+| 9 | Add an OTP in-app renderer that exposes the code | `test_otp_code_has_no_in_app_renderer` | `IndexError: No item with that key` at the added OTP branch |
+| 10 | Skip the announcement sweep | `test_tick_sweeps_then_delivers_using_the_configured_batch_limit` | `assert (0, 0, 0, 0) == (2, 2, 0, 0)` |
+| 11 | Treat FCM 401 as retryable | `test_401_is_permanent_and_never_copies_the_provider_message` | `assert False is True` on `error.permanent` |
+| 12 | Drop `message.android.collapse_key` | `test_payload_and_bearer_token_match_http_v1_contract` | payload comparison showed `android` missing |
+| 13 | Make a failed OTP DM return a different result | `test_failed_dm_returns_the_same_shape_and_a_sanitised_outcome` | `assert False is None` |
+| 14 | Import the FCM provider at module load | `test_notification_delivery_does_not_import_the_provider_module` | `ImportError: ... circular import` |
+| 15 | Let the delivery tick raise into the worker | `test_worker_delivery_hook_failure_does_not_fail_the_pipeline_tick` | `RuntimeError: push failed` escaped |
+
+No mutation or scratch file remained; `git status --short` showed only the intended Phase 11
+tree and nothing staged.
+
+### 15.4 Final battery (exact commands, real observed output)
+
+| Check | Result |
+|---|---|
+| `.venv\Scripts\python.exe -m pytest` | `1623 passed in 313.03s (0:05:13)`, exit 0 |
+| `.venv\Scripts\python.exe -m ruff check .` | `All checks passed!`, exit 0 |
+| `.venv\Scripts\python.exe -m mypy` | `Success: no issues found in 31 source files`, exit 0 |
+| `.venv\Scripts\python.exe -m backend --version` | `0.0.1`, exit 0 |
+| Fresh-database probe (disposable DB outside the repo) | `first 23 1 23`; `second []`; `foreign_key_check []`; `integrity_check ['ok']`; tables `['notification_read', 'push_endpoint']` |
+| `git diff --check` | clean (no output) |
+| `git status --short` | intended Phase 11 files only; nothing staged |
+
+### 15.5 Read-only audit (file:line evidence)
+
+| Audit question | Evidence |
+|---|---|
+| Is the OTP code kept out of logs, errors, reprs and in-app bodies? | Code appears only in the DM request body (`notification_delivery.py:267`); `RecordingOtpSender`/`DevelopmentOtpSender`/`DiscordDmOtpSender` reprs omit it (`:161`, `:180`, `:224`); the failure log carries only the sanitised outcome (`:235`); the blank-input `ValueError` carries no values (`:230`); `test_otp_code_has_no_in_app_renderer` proves there is no OTP in-app renderer. |
+| Are tokens and service-account content kept out of logs, errors and reprs? | FCM payload construction is the only place the device token is used (`fcm_sender.py:257-268`); `FcmPushSender.__repr__` exposes only the project id (`:229`); all `PushDeliveryError` values carry status/provider code only (`:249`, `:253`, `:280`, `:287`, `:295`); the service account is read through `Config.require` (`:212`) and never logged or stored. |
+| Are attempt errors sanitised? | `_sanitized_push_error` returns only `HTTP <status>` and the provider code (`notification_delivery.py:840-849`); attempt inserts use that value (`:723`). |
+| Does `backend.notification_delivery` import a provider module? | No `fcm_sender` import; `test_notification_delivery_does_not_import_the_provider_module` runs a fresh interpreter and asserts `backend.fcm_sender` is not in `sys.modules`. |
+| Is every `INSERT INTO notification` in `notification_events.py`? | `notification_events.py:67` is the only match; `notification_delivery.py:621` is `notification_read` and `:723` is `notification_attempt`. |
+| Is the dropped `audience_scope` absent? | No `audience_scope` match in `backend` Python; fan-out reads `audience_type`/`audience_vertical_id`/`audience_ah_person_id` (`notification_delivery.py:1034-1055`). |
+| Is the FCM URL confined to the sender? | `https://fcm.googleapis.com` appears only in `backend/fcm_sender.py:31`. |
+| Are credentials in the repository? | No credential, token, phone number, OTP code or service-account content was added; tests use obviously fake values; `pyproject.toml` is unchanged. |
+
+### 15.6 Decisions, deviations and gaps
+
+- **O11 answers used.** O11-1 (d): OTP is a Discord DM from the ASEC bot to the roster
+  Discord id; no SMS, email or admin-code fallback. O11-2 (b): FCM HTTP v1 through an
+  optional `push` extra behind `PushSender`. O11-3 (a): 5 attempts, 5 s base, 300 s cap,
+  50 per batch, all configuration. O11-5: deep links remain opaque path strings such as
+  `/review/{proposal_id}`.
+- **Android only.** The payload is Android-shaped (`message.android.collapse_key`); no iOS,
+  APNs or platform field is emitted.
+- **Push pin not supplied.** `PUSH_EXTRA_PIN` was blank, so `pyproject.toml` was not edited.
+  The signing step is behind `TokenProvider`; the real signer lazily imports
+  `google.auth`/`google.oauth2` inside `GoogleServiceAccountTokenProvider.token` and raises
+  `PushProviderNotConfigured` at send time when the extra is absent. Declaring and pinning
+  the `push` extra is an owner step.
+- **At-least-once caveat.** A crash after the provider call but before the state update is
+  recovered as a `WORKER_CRASH_AFTER_SEND` failed attempt and the row is sent again. The
+  provider `collapse_key` is the notification id and the duplicate is visible in the attempt
+  ledger; Phase 11 does not claim exactly-once push.
+- **Single-delivery-process rule (hard deployment rule).** `deliver_pending` treats any
+  `SENDING` row as a lost claim and resends it, so two concurrent delivery processes could
+  double-send. The delivery tick must run in exactly one process (the worker). The
+  `test_sending_recovery_documents_the_single_delivery_process_rule` test and
+  `docs/KNOWN_GAPS.md` record this.
+- **Assignee naming limitation.** `ASSIGNEE_ACCEPTED`/`ASSIGNEE_DENIED` name the assignee
+  with the most recent `agreed_at` for that agreement. The notification row stores the task
+  and recipient, not the acting assignee, so two assignees accepting the same task cannot be
+  attributed per row. `test_two_acceptances_cannot_be_distinguished_by_the_notification_row`
+  pins the limitation; wording was not changed to hide it.
+- **Zero-recipient announcements.** An AH with no reports stages zero rows and never falls
+  back to the vertical. Each sweep re-examines it with one bounded query and no row churn;
+  `test_zero_recipient_announcement_sweep_is_idempotent_and_cheap` records it.
+- **No OTP notification row.** The notification schema has no OTP event or OTP row.
+  `run_delivery_tick` accepts `otp_sender` for the Phase 12 boundary but does not invent a
+  row; Phase 12 calls `OtpSender.send` directly after resolving the roster Discord id.
+- **Worker hook.** `run_live_tick(..., delivery_tick=None)` is the minimal additive hook. It
+  runs the delivery callable after `run_pipeline_tick`; a delivery failure is logged and
+  never fails the pipeline tick. `backend/__main__.py` is deliberately not wired because no
+  push sender can be configured while the `push` extra is undeclared; the deployment or
+  Phase 12 wiring supplies the callable. `run_delivery_tick` is exposed for that caller.
+- **Not live-verified.** FCM HTTP v1 and Discord DM sending have not been exercised against
+  the real services. Every test uses a fake transport and a fake `TokenProvider`; the suite
+  makes no network call. Phase 11 is therefore not claimed as verified live.
+- **Not built, awaiting owner decision.** A second notification channel (for example a
+  Discord DM notice when push fails) and an Admin-issued sign-in code were not built; both
+  would invent scope the SRS does not grant in this phase.
+
+Requirement coverage implemented and tested: **FR-NOT-01..07**, **FR-ROS-03** (interface
+and Discord DM sender), **EIR-04**, **FR-AUT-07** (inactive recipients never receive a
+provider call), **NFR-SEC-01**, **NFR-SEC-03**, **NFR-AUD-03** (append-only attempts and read
+markers), **NFR-REL-05** (delivery failure does not fail the pipeline tick), **AC-17** and
+**AC-22** (failure recorded, retried without a duplicate notification row).

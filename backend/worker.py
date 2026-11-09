@@ -266,6 +266,7 @@ def run_live_tick(
     generator: ProposalGenerator | None = None,
     parts: PartSettings | None = None,
     consecutive_failures: dict[int, int] | None = None,
+    delivery_tick: Callable[[], object] | None = None,
 ) -> LiveTickResult:
     """Poll every mapped group, ingest its page, then run the bounded tick.
 
@@ -384,6 +385,17 @@ def run_live_tick(
         poll_instants=poll_instants,
         poll_safety_margin_seconds=poll_safety_margin_seconds,
     )
+    if delivery_tick is not None:
+        try:
+            delivery_tick()
+        except Exception as error:  # noqa: BLE001 - delivery must not fail
+            # the pipeline tick; the durable attempt rows make the failure
+            # visible and the next tick retries it (FR-NOT-04).
+            logger.error(
+                "delivery tick failed: %s frames=%s",
+                type(error).__name__,
+                _traceback_frames(error),
+            )
     return LiveTickResult(
         polls=tuple(polls),
         tick=tick,

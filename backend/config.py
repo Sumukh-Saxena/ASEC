@@ -257,6 +257,56 @@ def _bounded_int(
     return value
 
 
+#: O11-3 owner-approved notification delivery policy: five attempts, a 5 s
+#: exponential base capped at 5 minutes, and at most 50 rows per batch. Every
+#: value is configuration and validated; no call site hard-codes it.
+DEFAULT_NOTIFICATION_MAX_ATTEMPTS = 5
+DEFAULT_NOTIFICATION_BACKOFF_BASE_SECONDS = 5.0
+DEFAULT_NOTIFICATION_BACKOFF_MAX_SECONDS = 300.0
+DEFAULT_NOTIFICATION_BATCH_LIMIT = 50
+
+NOTIFICATION_MAX_ATTEMPTS_KEY = "NOTIFICATION_MAX_ATTEMPTS"
+NOTIFICATION_BACKOFF_BASE_KEY = "NOTIFICATION_BACKOFF_BASE_SECONDS"
+NOTIFICATION_BACKOFF_MAX_KEY = "NOTIFICATION_BACKOFF_MAX_SECONDS"
+NOTIFICATION_BATCH_LIMIT_KEY = "NOTIFICATION_BATCH_LIMIT"
+
+
+@dataclass(frozen=True)
+class NotificationSettings:
+    """Validated notification retry and batch policy (O11-3, FR-NOT-04/05)."""
+
+    max_attempts: int = DEFAULT_NOTIFICATION_MAX_ATTEMPTS
+    backoff_base_seconds: float = DEFAULT_NOTIFICATION_BACKOFF_BASE_SECONDS
+    backoff_max_seconds: float = DEFAULT_NOTIFICATION_BACKOFF_MAX_SECONDS
+    batch_limit: int = DEFAULT_NOTIFICATION_BATCH_LIMIT
+
+
+def load_notification_settings(config: Config) -> NotificationSettings:
+    """Build :class:`NotificationSettings`; invalid values are rejected."""
+    defaults = NotificationSettings()
+    base = _positive_float(
+        config, NOTIFICATION_BACKOFF_BASE_KEY, defaults.backoff_base_seconds
+    )
+    cap = _positive_float(
+        config, NOTIFICATION_BACKOFF_MAX_KEY, defaults.backoff_max_seconds
+    )
+    if cap < base:
+        raise ConfigError(
+            f"{NOTIFICATION_BACKOFF_MAX_KEY} must be at least"
+            f" {NOTIFICATION_BACKOFF_BASE_KEY} ({base}), got {cap}"
+        )
+    return NotificationSettings(
+        max_attempts=_positive_int(
+            config, NOTIFICATION_MAX_ATTEMPTS_KEY, defaults.max_attempts
+        ),
+        backoff_base_seconds=base,
+        backoff_max_seconds=cap,
+        batch_limit=_positive_int(
+            config, NOTIFICATION_BATCH_LIMIT_KEY, defaults.batch_limit
+        ),
+    )
+
+
 #: Discord REST polling (plan §4.7, O9-1). The token is read with
 #: :meth:`Config.require` at the call site and never stored in these settings.
 DISCORD_BOT_TOKEN_KEY = "DISCORD_BOT_TOKEN"

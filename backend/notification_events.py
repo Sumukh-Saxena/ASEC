@@ -27,6 +27,9 @@ EVENT_HEAD_CROSS_VERTICAL_TASK = "HEAD_CROSS_VERTICAL_TASK"
 # Phase 8 decision label (plan §4.4): the requester hears the decision.
 EVENT_CROSS_VERTICAL_DECISION = "CROSS_VERTICAL_DECISION"
 
+# Phase 11 announcement fan-out label (plan §4.5). One row per recipient.
+EVENT_ANNOUNCEMENT = "ANNOUNCEMENT"
+
 # Phase 7 task lifecycle labels (plan §4.4). No other vocabulary is invented.
 EVENT_ASSIGNEE_ACCEPTED = "ASSIGNEE_ACCEPTED"
 EVENT_ASSIGNEE_DENIED = "ASSIGNEE_DENIED"
@@ -97,3 +100,8 @@ def approval_request_key(request_id: int, person_id: int) -> str:
 def cross_vertical_decision_key(request_id: int, person_id: int) -> str:
     """Dedupe key for one approval decision delivered to one person."""
     return f"{EVENT_CROSS_VERTICAL_DECISION}:{request_id}:{person_id}"
+
+
+def announcement_key(announcement_id: int, person_id: int) -> str:
+    """Dedupe key for one announcement delivered to one recipient (plan §4.5)."""
+    return f"{EVENT_ANNOUNCEMENT}:{announcement_id}:{person_id}"
