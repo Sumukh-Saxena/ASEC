@@ -27,9 +27,11 @@ from pathlib import Path
 from backend import __version__
 from backend.alerts import LogAlertSender
 from backend.config import (
+    API_ALLOW_NON_LOOPBACK_KEY,
     DISCORD_BOT_TOKEN_KEY,
     Config,
     ConfigError,
+    load_api_settings,
     load_config,
     load_discord_settings,
     load_sqlite_settings,
@@ -47,6 +49,7 @@ from backend.discord_adapter import (
 from backend.group_import import GroupImportError, import_groups_from_file
 from backend.ingest import ingest_message
 from backend.logging_setup import setup_logging
+from backend.notification_delivery import OtpSender
 from backend.worker import LiveTickResult, run_live_tick
 
 logger = logging.getLogger("asec.cli")
@@ -70,6 +73,14 @@ _IMPORT_GROUPS_USAGE = (
     "usage: python -m backend import-groups --db <database path>"
     " --file <csv path> [--confirm]"
 )
+
+_SERVE_API_USAGE = (
+    "usage: python -m backend serve-api [--host <host>] [--port <port>]"
+)
+
+#: Only these literals are treated as loopback; anything else needs the
+#: explicit API_ALLOW_NON_LOOPBACK flag (W2, O12-6).
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def _parse_smoke_args(args: Sequence[str]) -> tuple[str, str] | None:
@@ -405,6 +416,132 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _parse_serve_api_args(
+    args: Sequence[str],
+) -> tuple[str | None, int | None] | None:
+    host: str | None = None
+    port: int | None = None
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if option in ("--host", "--port"):
+            if index + 1 >= len(args):
+                return None
+            value = args[index + 1].strip()
+            if value == "":
+                return None
+            if option == "--host":
+                host = value
+            else:
+                try:
+                    parsed = int(value)
+                except ValueError:
+                    return None
+                if not 1 <= parsed <= 65535:
+                    return None
+                port = parsed
+            index += 2
+            continue
+        return None
+    return host, port
+
+
+def _configured_otp_sender(config: Config) -> OtpSender | None:
+    """Build the production OTP DM sender, or report that none is configured.
+
+    The token is read only through :meth:`Config.require`, which the sender
+    calls; nothing here prints or returns it. Without a token, sign-in still
+    answers normally and the private ledger records SENDER_UNCONFIGURED.
+    """
+    token = config.get(DISCORD_BOT_TOKEN_KEY)
+    if token is None or token.strip() == "":
+        print(
+            "warning: no OTP sender configured; sign-in requests will not"
+            " deliver a DM",
+            file=sys.stderr,
+        )
+        return None
+    from backend.discord_adapter import UrllibTransport
+    from backend.notification_delivery import DiscordDmOtpSender
+
+    return DiscordDmOtpSender(config=config, transport=UrllibTransport())
+
+
+def _serve_with_uvicorn(app: object, host: str, port: int) -> None:
+    from backend.api.server import run_server
+
+    run_server(app, host=host, port=port)  # type: ignore[arg-type]
+
+
+def _run_serve_api(
+    args: Sequence[str],
+    *,
+    config: Config,
+    serve: Callable[[object, str, int], None],
+) -> int:
+    """Serve the API without migrations, a worker or any printed secret."""
+    parsed = _parse_serve_api_args(args)
+    if parsed is None:
+        print(_SERVE_API_USAGE, file=sys.stderr)
+        return 2
+    host_arg, port_arg = parsed
+    try:
+        setup_logging(config)
+        api_settings = load_api_settings(config)
+        sqlite_settings = load_sqlite_settings(config)
+    except ConfigError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    host = api_settings.host if host_arg is None else host_arg
+    port = api_settings.port if port_arg is None else port_arg
+    if host not in _LOOPBACK_HOSTS and not api_settings.allow_non_loopback:
+        print(
+            f"refusing to bind {host}: set {API_ALLOW_NON_LOOPBACK_KEY} to allow"
+            " a non-loopback address",
+            file=sys.stderr,
+        )
+        return 2
+    production = config.get(PRODUCTION_DB_PATH_KEY)
+    if production is None or production.strip() == "":
+        print(
+            f"{PRODUCTION_DB_PATH_KEY} is not set; serve-api needs the database"
+            " path",
+            file=sys.stderr,
+        )
+        return 2
+    database = production.strip()
+    if not Path(database).is_file():
+        print(
+            "database does not exist; apply migrations before serve-api",
+            file=sys.stderr,
+        )
+        return 2
+
+    def open_connection() -> sqlite3.Connection:
+        return connect(
+            database, busy_timeout_ms=sqlite_settings.busy_timeout_ms
+        )
+
+    try:
+        from backend.api import ApiConfigurationError, create_app
+
+        app = create_app(
+            connection_factory=open_connection,
+            now=_utc_now,
+            config=config,
+            otp_sender=_configured_otp_sender(config),
+        )
+    except (ConfigError, ApiConfigurationError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    print(f"serving API on {host}:{port}")
+    try:
+        serve(app, host, port)
+    except KeyboardInterrupt:
+        return 0
+    return 0
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -412,6 +549,7 @@ def main(
     transport: Transport | None = None,
     sleep: Callable[[float], None] | None = None,
     now: Callable[[], str] | None = None,
+    serve_api: Callable[[object, str, int], None] | None = None,
 ) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args == ["--version"]:
@@ -435,8 +573,15 @@ def main(
         return _run_import_groups(
             args[1:], config=load_config() if config is None else config
         )
+    if args and args[0] == "serve-api":
+        return _run_serve_api(
+            args[1:],
+            config=load_config() if config is None else config,
+            serve=_serve_with_uvicorn if serve_api is None else serve_api,
+        )
     print(
-        "ASEC backend (Phase 0). Use --version, 'discord-smoke' or 'run-live'.",
+        "ASEC backend (Phase 0). Use --version, 'discord-smoke', 'run-live',"
+        " 'import-groups' or 'serve-api'.",
         file=sys.stderr,
     )
     return 2

@@ -155,8 +155,8 @@ def test_0018_lands_in_the_window_and_reapply_is_a_noop(
     """PB-6: 0018 applies with 0016/0017 and re-running changes nothing."""
     assert _versions(pre_window) == list(range(1, _PRE_WINDOW + 1))
 
-    assert apply_migrations(pre_window) == [16, 17, 18, 19, 20, 21, 22, 23]
-    assert _versions(pre_window) == list(range(1, 24))
+    assert apply_migrations(pre_window) == [16, 17, 18, 19, 20, 21, 22, 23, 24]
+    assert _versions(pre_window) == list(range(1, 25))
     assert apply_migrations(pre_window) == []
 
 

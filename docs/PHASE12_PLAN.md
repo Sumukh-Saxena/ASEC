@@ -135,66 +135,148 @@ def revoke_session(connection, token: str, *, now: str | None = None) -> bool
 - No password, no refresh token, no cookie; `Authorization: Bearer <token>` only, so no
   CSRF surface. TLS termination is deployment (O12-6).
 
-### 4.2 HTTP transport (O12-1) — REWRITE AT PHASE START
+### 4.2 HTTP transport (O12-1) - REWRITTEN AT PHASE START
 
-> **Do not execute the bullets below as written.** O12-1 (`docs/OWNER_ANSWERS.md`) chose
-> **(b) a mature framework (FastAPI-class) in an optional `api` extra**, confined to
-> `backend/api`, with domain services framework-free. The stdlib sketch that follows is the
-> pre-decision draft, kept only as a record of what the section covered.
->
-> **Rewrite at phase start.** The rewritten section must cover, at minimum:
-> 1. **Dependency policy (`docs/OWNER_ANSWERS.md`).** The core backend stays
->    dependency-free; the framework and its server are allowed only as an optional `api`
->    extra in `pyproject.toml`, pinned to an exact version at least two weeks old, imported
->    only under `backend/api`, with all core tests passing without the extra installed. A
->    missing extra must fail with a clear configuration error, not an import error in the
->    domain packages.
-> 2. **Import direction.** `backend/api` may import domain services; no domain module may
->    import the framework. Enforce it with an import test (AST/regex over `backend/`).
-> 3. **App factory and lifespan.** One `create_app(...)` taking `connection_factory`,
->    `now`, `config`; no module-level app, no global connection; the worker is never started
->    by the API process.
-> 4. **Dependency-injection seam** replacing `handler(request, context)`: a per-request
->    dependency that opens one SQLite connection, sets WAL/foreign keys as today, closes it,
->    and attaches the authenticated person; handlers stay thin service calls.
-> 5. **Validation and errors.** Framework request models for bodies/params (still rejecting
->    unknown fields), an exception handler mapping `ApiError` and domain exceptions to the
->    same status/code table (404/403/409/422/401/429/500), request IDs, and no stack traces,
->    SQL, paths or secrets in responses.
-> 6. **Auth dependency.** Bearer token → `authenticate` → 401/403 with denial recording;
->    route-level checks remain defence in depth, never the only check.
-> 7. **Route surface unchanged.** The §4.3 paths, methods and status codes stay the contract
->    (O12-2); the rewrite changes transport mechanics only.
-> 8. **Tests.** Handler-level tests stay framework-free where possible; the localhost smoke
->    test uses the framework's test client or a real ephemeral-port server; the suite must
->    still pass on a clean install with the `api` extra absent for every non-API test.
-> 9. **Deployment.** `python -m backend.api` (or the framework's runner) reads host/port
->    from config; TLS/hosting stays O12-6; no auto-migrate on start.
+> **Rewrite executed 2026-11-13 (Phase 12 Session A, W2).** O12-1 chose option (b): a
+> mature framework in an optional `api` extra, confined to `backend/api`, with every
+> domain service framework-free. This block replaces the 2026-10-29 stdlib draft (kept
+> only in git history) and is the transport contract for the rest of Phase 12. Later
+> workstreams add routes against it; none of these mechanics changes again.
 
-The pre-decision draft, for reference only:
+#### 4.2.1 Dependency policy (`docs/OWNER_ANSWERS.md`)
 
-- Recommended default: stdlib `http.server.ThreadingHTTPServer` +
-  `BaseHTTPRequestHandler`, a small regex routing table, `json` bodies, one SQLite
-  connection per request (`connect(path)`), `Content-Type: application/json; charset=utf-8`.
-  No dependency; fits one backend host (PB-4).
-- ~~Alternative: a FastAPI-class dependency. It adds install/deploy weight and is not
-  needed for twelve endpoints; the owner decides (O12-1).~~ Superseded: O12-1 chose the
-  FastAPI-class framework in the optional `api` extra.
-- Handlers are pure functions `handler(request, context) -> (status, payload)` where
-  `context` carries the connection, `now` and the authenticated person. This makes the
-  whole surface testable without sockets; one localhost smoke test exercises the real
-  server on an ephemeral port.
-- Request limits: body size cap (e.g. 64 KiB), JSON object required, unknown fields
-  rejected per route, UTF-8 only. Responses never include stack traces, SQL, file paths or
-  secrets.
-- Errors: `ApiError(status, code)`; domain mapping: not-found → 404, authorization → 403
-  (denial already recorded by the service), stale version → 409 with the current snapshot,
-  capacity → 409, validation → 422, bad/expired token → 401, rate limit → 429, unexpected →
-  500 with a request id only. A 500 is logged server-side with the request id and no
-  payload content.
-- The server is started by `python -m backend.api` (host/port from config) and never
-  auto-starts a worker.
+- The core backend stays dependency-free: `dependencies = []` is unchanged and every
+  non-API test passes on a clean install without the extra.
+- `pyproject.toml` declares exactly one optional extra: `api = ["fastapi==0.162.0",
+  "uvicorn==0.54.0"]`. Both pins are owner-supplied, exact versions released at least two
+  weeks before 13 Nov 2026. No other direct dependency is added.
+- The framework and its server are imported only inside `backend/api`. No domain module
+  imports either package, so a missing extra can never break ingestion, bucketing,
+  review, tasks, approvals, notifications, evaluation or the worker.
+- A missing extra becomes `backend.api.ApiConfigurationError` (a `RuntimeError`
+  subclass) at API import or creation time, with the install command in the message. It
+  is never a bare `ModuleNotFoundError` from a domain import.
+- Transitive packages (starlette, pydantic, anyio and the rest) are not pinned by this
+  phase; their resolved versions are recorded in the checkpoint report so the owner can
+  check their release dates.
 
+#### 4.2.2 Import direction
+
+- `backend/api` may import any domain service. No module outside `backend/api` may
+  import `fastapi`, `uvicorn` or `starlette`, and no module outside `backend/api` and
+  `backend/__main__.py` (the CLI boundary) may import `backend.api`.
+- `backend/__main__.py` imports `backend.api` lazily inside the `serve-api` branch, so
+  `python -m backend --version` and every existing subcommand work without the extra.
+- A test walks `backend/**/*.py` with `ast` and enforces both directions; a second
+  textual assertion catches a literal framework import that AST parsing would miss.
+
+#### 4.2.3 App factory and lifespan
+
+- `create_app(*, connection_factory, now, config, otp_sender=None)` builds one app. There
+  is no module-level app instance, no global connection and no import-time side effect.
+- Startup does nothing: no migrations, no worker, no scheduler, no connection. The worker
+  remains a separate entry point (PB-4, plan §2.2). Nothing in the API process imports
+  `backend.worker`.
+- `FastAPI(...)` is created with `docs_url=None`, `redoc_url=None` and `openapi_url=None`
+  so the document endpoints cannot become unclassified routes.
+- `create_app` validates configuration at creation time (`load_auth_settings`); an
+  invalid value raises `ConfigError` before the socket is bound.
+- The app carries its dependencies on `app.state`: `connection_factory`, `now`,
+  `auth_settings`, `otp_sender` and `config`. No handler reaches for a global.
+
+#### 4.2.4 Per-request dependency seam
+
+- One dependency, `_open_request_state`, opens exactly one SQLite connection through the
+  injected `connection_factory` (the CLI passes `backend.db.connection.connect`, so WAL,
+  `PRAGMA foreign_keys = ON` and the configured busy timeout are the same as everywhere
+  else), yields a `RequestState(connection, now)`, and closes the connection in a
+  `finally` block.
+- `now` is the injected callable evaluated once per request; service calls receive that
+  value, so a request sees one consistent instant and no module reads the wall clock.
+- Handlers stay thin: parse the body, call one domain function, serialize the result.
+  No SQL in a handler except the authentication/session calls the plan explicitly allows.
+- Handlers and dependencies are `async def` but execute the existing synchronous service
+  calls on the event-loop thread. That keeps the per-request connection on one thread
+  (`sqlite3` default `check_same_thread=True`) and is the simplest correct choice for the
+  single-host MVP. The cost is that one slow call, such as an OTP DM send, blocks other
+  requests for its duration; this is recorded as a known risk, and moving delivery to
+  the worker is the upgrade path, not part of this phase.
+
+#### 4.2.5 Validation and errors
+
+- Request bodies are Pydantic models with `extra="forbid"`, so an unknown field is a 422
+  rather than a silently ignored value. The OTP and code fields are bounded strings; a
+  body over 64 KiB is rejected before parsing.
+- Every error response is one shape:
+  `{"error": {"code": "<CODE>", "message": "<fixed text>", "request_id": "<hex>"}}`.
+  The message is a constant per code; no detail, field name, input value, SQL, file path,
+  token or OTP code is echoed.
+- Fixed code table:
+
+  | Status | Code | Used for |
+  |---|---|---|
+  | 401 | `UNAUTHENTICATED` | missing/malformed bearer token, wrong/expired/exhausted/reused code, revoked or expired session, inactive person |
+  | 403 | `FORBIDDEN` | authorization denial (the service has already recorded it) |
+  | 404 | `NOT_FOUND` | unknown path or subject |
+  | 409 | `CONFLICT` | stale `expected_version`, capacity or state conflict |
+  | 422 | `INVALID_REQUEST` | validation failure, unknown field, oversized body, unsupported method |
+  | 429 | `RATE_LIMITED` | verify rate limit exceeded |
+  | 500 | `INTERNAL_ERROR` | unexpected failure; generic body, logged server-side by request id only |
+
+  A framework `HTTPException` outside the table maps to `INTERNAL_ERROR` when it is a
+  server error and `INVALID_REQUEST` when it is a client error.
+- Request IDs are generated server-side per request (`secrets.token_hex(8)`), returned in
+  the `X-Request-ID` header and inside every error body. The server logs the id, method,
+  route, status, actor id when authenticated, and latency; never a token, a code, a phone
+  number, message content or SQL.
+- A 500 is logged as the exception type and the request id only; the response is the
+  fixed `INTERNAL_ERROR` body.
+
+#### 4.2.6 Auth dependency
+
+- `Authorization: Bearer <token>` only. No cookie, no CSRF surface, no session in a query
+  string. A missing or malformed header is a 401 before any service call.
+- The dependency hashes the token, calls `backend.auth.authenticate` with the request's
+  `now`, and turns `AuthError` into the uniform 401. The authenticated person (id, role,
+  verticals from the current roster row) is attached to the request state.
+- Route-level role checks remain defence in depth only; the service re-checks
+  authorization against the database, and denial recording stays in the shared
+  `record_denial` path (FR-AUT-01/06).
+- `/healthz`, `/auth/otp` and `/auth/verify` are the only public routes. Everything else
+  requires a session.
+
+#### 4.2.7 Route surface unchanged
+
+- The §4.3 paths, methods and semantics are the contract (O12-2). The transport rewrite
+  changes mechanics only; no route is renamed and no route is added without a §4.4
+  classification.
+- W2 ships only the auth block (`POST /auth/otp`, `POST /auth/verify`,
+  `POST /auth/logout`, `GET /me`) plus `GET /healthz`. The review, task, approval,
+  notification, dashboard and admin routes arrive in W3-W6.
+- There is no roster route (O12-4, FR-ROS-02).
+
+#### 4.2.8 Tests
+
+- API tests live in `tests/test_api_*.py` and start with `pytest.importorskip("fastapi")`.
+  That is the single sanctioned skip: it exists only so a clean install without the extra
+  still passes the core suite. With the extra installed the modules run and are reported
+  by name.
+- The app is driven by a small in-repo ASGI caller (`app(scope, receive, send)` with
+  stdlib `asyncio` only). No `httpx` and no test client dependency is added.
+- One smoke test starts `uvicorn` on an ephemeral loopback port in a thread and makes a
+  real `urllib` request, proving the served app is the one built by `create_app`.
+- Domain tests (`tests/test_auth.py`, `tests/test_migrations_auth.py`) remain
+  framework-free and are unchanged by this section.
+
+#### 4.2.9 Deployment and CLI
+
+- `python -m backend serve-api [--host H] [--port P]` imports `backend.api` lazily, reads
+  host/port from configuration (`API_HOST`, default `127.0.0.1`; `API_PORT`, default
+  8000), refuses a non-loopback host unless `API_ALLOW_NON_LOOPBACK` is explicitly true,
+  and prints the bind address and status only.
+- It never runs migrations, never starts the worker and never prints a token or a
+  configuration value.
+- TLS termination and hosting remain O12-6 (owner-supplied, out of repo).
 ### 4.3 Minimum route surface (owner approves, O12-2)
 
 Auth: `POST /auth/otp`, `POST /auth/verify`, `POST /auth/logout`, `GET /me`.

@@ -15,6 +15,12 @@ dev = [
     "ruff==0.17.1",
     "mypy==2.4.0",
 ]
+# Optional HTTP transport (O12-1). The core stays dependency-free: installing
+# the package without this extra must keep every non-API test green.
+api = [
+    "fastapi==0.162.0",
+    "uvicorn==0.54.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["backend*"]

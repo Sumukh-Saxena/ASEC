@@ -70,7 +70,7 @@ def _notification_id(connection: sqlite3.Connection) -> int:
 
 
 def test_0023_applies_and_reapplies_without_changes(conn: sqlite3.Connection) -> None:
-    assert _versions(conn) == list(range(1, 24))
+    assert _versions(conn) == list(range(1, 25))
     names = {
         str(row["name"])
         for row in conn.execute(
@@ -79,7 +79,7 @@ def test_0023_applies_and_reapplies_without_changes(conn: sqlite3.Connection) ->
     }
     assert {"push_endpoint", "notification_read"} <= names
     assert apply_migrations(conn) == []
-    assert _versions(conn) == list(range(1, 24))
+    assert _versions(conn) == list(range(1, 25))
 
 
 def test_push_endpoint_provider_is_fcm_only(conn: sqlite3.Connection) -> None:

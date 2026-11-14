@@ -58,7 +58,7 @@ def _batch(
 
 
 def test_migration_0021_applies_and_reapplies(conn: sqlite3.Connection) -> None:
-    assert _versions(conn) == list(range(1, 24))
+    assert _versions(conn) == list(range(1, 25))
     assert apply_migrations(conn) == []
 
 

@@ -307,6 +307,120 @@ def load_notification_settings(config: Config) -> NotificationSettings:
     )
 
 
+#: O12-3 owner-approved sign-in policy: a 5-minute OTP, 5 verification
+#: attempts, a 7-day session, and DB-backed rate limits of 3 OTP requests and
+#: 10 verify failures per 15-minute window. Every value is configuration and
+#: validated; no call site hard-codes it (FR-ROS-03, NFR-SEC-06).
+DEFAULT_AUTH_OTP_TTL_SECONDS = 300
+DEFAULT_AUTH_OTP_MAX_ATTEMPTS = 5
+DEFAULT_AUTH_SESSION_LIFETIME_SECONDS = 7 * 24 * 60 * 60
+DEFAULT_AUTH_OTP_REQUEST_LIMIT = 3
+DEFAULT_AUTH_VERIFY_FAILURE_LIMIT = 10
+DEFAULT_AUTH_RATE_WINDOW_SECONDS = 15 * 60
+
+AUTH_OTP_TTL_KEY = "AUTH_OTP_TTL_SECONDS"
+AUTH_OTP_MAX_ATTEMPTS_KEY = "AUTH_OTP_MAX_ATTEMPTS"
+AUTH_SESSION_LIFETIME_KEY = "AUTH_SESSION_LIFETIME_SECONDS"
+AUTH_OTP_REQUEST_LIMIT_KEY = "AUTH_OTP_REQUEST_LIMIT"
+AUTH_VERIFY_FAILURE_LIMIT_KEY = "AUTH_VERIFY_FAILURE_LIMIT"
+AUTH_RATE_WINDOW_KEY = "AUTH_RATE_WINDOW_SECONDS"
+
+
+@dataclass(frozen=True)
+class AuthSettings:
+    """Validated OTP and session policy (O12-3, FR-ROS-03, NFR-SEC-06)."""
+
+    otp_ttl_seconds: int = DEFAULT_AUTH_OTP_TTL_SECONDS
+    otp_max_attempts: int = DEFAULT_AUTH_OTP_MAX_ATTEMPTS
+    session_lifetime_seconds: int = DEFAULT_AUTH_SESSION_LIFETIME_SECONDS
+    otp_request_limit: int = DEFAULT_AUTH_OTP_REQUEST_LIMIT
+    verify_failure_limit: int = DEFAULT_AUTH_VERIFY_FAILURE_LIMIT
+    rate_window_seconds: int = DEFAULT_AUTH_RATE_WINDOW_SECONDS
+
+
+def load_auth_settings(config: Config) -> AuthSettings:
+    """Build :class:`AuthSettings`; invalid values are rejected, never clamped."""
+    defaults = AuthSettings()
+    return AuthSettings(
+        otp_ttl_seconds=_positive_int(
+            config, AUTH_OTP_TTL_KEY, defaults.otp_ttl_seconds
+        ),
+        otp_max_attempts=_positive_int(
+            config, AUTH_OTP_MAX_ATTEMPTS_KEY, defaults.otp_max_attempts
+        ),
+        session_lifetime_seconds=_positive_int(
+            config,
+            AUTH_SESSION_LIFETIME_KEY,
+            defaults.session_lifetime_seconds,
+        ),
+        otp_request_limit=_positive_int(
+            config, AUTH_OTP_REQUEST_LIMIT_KEY, defaults.otp_request_limit
+        ),
+        verify_failure_limit=_positive_int(
+            config,
+            AUTH_VERIFY_FAILURE_LIMIT_KEY,
+            defaults.verify_failure_limit,
+        ),
+        rate_window_seconds=_positive_int(
+            config, AUTH_RATE_WINDOW_KEY, defaults.rate_window_seconds
+        ),
+    )
+
+
+#: W2: the API bind address is configuration. The default is loopback and a
+#: non-loopback address is refused unless the owner opts in explicitly (O12-6).
+DEFAULT_API_HOST = "127.0.0.1"
+DEFAULT_API_PORT = 8000
+
+API_HOST_KEY = "API_HOST"
+API_PORT_KEY = "API_PORT"
+API_ALLOW_NON_LOOPBACK_KEY = "API_ALLOW_NON_LOOPBACK"
+
+
+@dataclass(frozen=True)
+class ApiSettings:
+    """Validated API bind settings (W2, O12-6)."""
+
+    host: str = DEFAULT_API_HOST
+    port: int = DEFAULT_API_PORT
+    allow_non_loopback: bool = False
+
+
+def load_api_settings(config: Config) -> ApiSettings:
+    """Build :class:`ApiSettings`; an invalid host or port is rejected."""
+    raw_host = config.get(API_HOST_KEY)
+    host = (
+        DEFAULT_API_HOST
+        if raw_host is None or raw_host.strip() == ""
+        else raw_host.strip()
+    )
+    return ApiSettings(
+        host=host,
+        port=_bounded_int(
+            config,
+            API_PORT_KEY,
+            DEFAULT_API_PORT,
+            minimum=1,
+            maximum=65535,
+        ),
+        allow_non_loopback=_boolean(
+            config, API_ALLOW_NON_LOOPBACK_KEY, default=False
+        ),
+    )
+
+
+def _boolean(config: Config, name: str, *, default: bool) -> bool:
+    raw = config.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    text = raw.strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{name} must be true or false, got {raw!r}")
+
+
 #: Discord REST polling (plan §4.7, O9-1). The token is read with
 #: :meth:`Config.require` at the call site and never stored in these settings.
 DISCORD_BOT_TOKEN_KEY = "DISCORD_BOT_TOKEN"

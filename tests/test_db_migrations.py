@@ -335,7 +335,7 @@ def test_real_migrations_reapply_cleanly_after_a_populated_database(
     """
     connection = connect(tmp_path / "phase7-fresh.db")
     try:
-        assert apply_migrations(connection) == list(range(1, 24))
+        assert apply_migrations(connection) == list(range(1, 25))
 
         connection.execute("INSERT INTO vertical (id, name) VALUES (1, 'Tech')")
         connection.execute(
@@ -421,7 +421,7 @@ def test_real_migrations_reapply_cleanly_after_a_populated_database(
         )
 
         assert apply_migrations(connection) == []
-        assert _versions(connection) == list(range(1, 24))
+        assert _versions(connection) == list(range(1, 25))
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         connection.close()
