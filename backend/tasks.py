@@ -357,6 +357,41 @@ def visible_tasks(
     return tuple(_summary(row) for row in rows)
 
 
+def get_task_summary(
+    connection: sqlite3.Connection,
+    task_id: int,
+    *,
+    viewer_person_id: int,
+) -> TaskSummary:
+    """Return one task the viewer may see, else ``TaskNotFoundError``.
+
+    W3 adds this single-task read so a route never reaches for a private
+    helper: a hidden (``PENDING``/``DENIED``) or cancelled task is reported as
+    not found exactly like :func:`visible_tasks` omits it (FR-TSK-11,
+    NFR-SEC-03).
+    """
+    actor = _require_actor(
+        connection,
+        viewer_person_id,
+        operation=OPERATION_TASK_VIEW,
+        subject_id=task_id,
+    )
+    clauses, parameters = _visibility_clauses(
+        connection,
+        actor,
+        viewer_person_id=viewer_person_id,
+        include_cancelled=False,
+        include_hidden=False,
+    )
+    row = connection.execute(
+        f"{_SUMMARY_SELECT} WHERE t.id = ? AND {' AND '.join(clauses)}",
+        (task_id, *parameters),
+    ).fetchone()
+    if row is None:
+        raise TaskNotFoundError(f"task {task_id} not found")
+    return _summary(row)
+
+
 def _live_task_row(
     connection: sqlite3.Connection, task_id: int
 ) -> sqlite3.Row | None:

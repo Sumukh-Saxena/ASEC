@@ -196,7 +196,7 @@ def test_reapplying_the_migrations_is_idempotent(tmp_path: Path) -> None:
         # Phase 7 added the 0016-0018 schema window, Phase 9 added 0019-0021 and
         # Phase 10 added 0022; the shared count expectation bumps to 22 with them
         # (PB-3/PB-5/PB-6).
-        assert [row["version"] for row in rows] == list(range(1, 25))
+        assert [row["version"] for row in rows] == list(range(1, 26))
     finally:
         connection.close()
 

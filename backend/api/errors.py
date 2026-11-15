@@ -4,9 +4,16 @@ One JSON shape for every failure, a fixed status/code table, and a
 server-generated request id. A message is a constant per code: no field name,
 input value, SQL, file path, token or OTP code is ever echoed, and a 500 says
 nothing beyond "the server could not complete the request".
+
+A code may carry a fixed ``payload`` (W3): the only use is the stale-edit 409,
+which returns the current task snapshot at the top level next to ``error``. The
+payload is built by a serializer from database rows, never from the request.
 """
 
 from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
 
 ERROR_MESSAGES: dict[str, tuple[int, str]] = {
     "UNAUTHENTICATED": (401, "Authentication is required."),
@@ -14,6 +21,10 @@ ERROR_MESSAGES: dict[str, tuple[int, str]] = {
     "NOT_FOUND": (404, "The resource was not found."),
     "CONFLICT": (409, "The request conflicts with the current state."),
     "INVALID_REQUEST": (422, "The request is not valid."),
+    "IDEMPOTENCY_KEY_REUSED": (
+        422,
+        "The idempotency key was already used for a different request.",
+    ),
     "RATE_LIMITED": (429, "Too many requests; try again later."),
     "INTERNAL_ERROR": (500, "The server could not complete the request."),
 }
@@ -25,11 +36,14 @@ MAX_BODY_BYTES = 64 * 1024
 class ApiError(Exception):
     """A mapped API failure. The code must belong to the fixed table."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(
+        self, code: str, payload: Mapping[str, Any] | None = None
+    ) -> None:
         if code not in ERROR_MESSAGES:
             raise ValueError(f"unknown API error code {code!r}")
         self.code = code
         self.status = ERROR_MESSAGES[code][0]
+        self.payload: dict[str, Any] = {} if payload is None else dict(payload)
         super().__init__(code)
 
 
@@ -46,13 +60,24 @@ def code_for_status(status: int) -> str:
     return "INTERNAL_ERROR" if status >= 500 else "INVALID_REQUEST"
 
 
-def error_body(code: str, request_id: str) -> dict[str, object]:
-    """The one error shape; ``request_id`` is generated server-side."""
+def error_body(
+    code: str,
+    request_id: str,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The one error shape; ``request_id`` is generated server-side.
+
+    ``payload`` is an allow-listed serializer output (W3); it is merged at the
+    top level and never carries a request value or a message.
+    """
     _status, message = ERROR_MESSAGES[code]
-    return {
+    body: dict[str, Any] = {
         "error": {
             "code": code,
             "message": message,
             "request_id": request_id,
         }
     }
+    if payload:
+        body.update(payload)
+    return body

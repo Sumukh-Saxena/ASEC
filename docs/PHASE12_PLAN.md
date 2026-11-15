@@ -365,6 +365,36 @@ def visible_fields(connection, actor, target) -> frozenset[str]
 
 ---
 
+#### 4.7 Idempotency keys (owner A2, Session B)
+
+Marked block added in Phase 12 Session B; it is the implementation contract for
+migration `0025_idempotency.sql` and `backend/api/idempotency.py`.
+
+- Scope: `POST /tasks/{id}/claims`, `/agreement`, `/status`, `/reassign`,
+  `/cancel`, `POST /proposals/{id}/accept` and `/reject`,
+  `POST /approvals/{id}/decision`, `POST /push-endpoints`. Reads, sign-in and
+  `PATCH /tasks/{id}` are not idempotent-key routes; `PATCH` already carries
+  `expected_version`.
+- Header: `Idempotency-Key`, optional. When present it must be 16-64 characters
+  from `A-Z a-z 0-9 . _ : -`; a malformed value is a 422 that does no work. The
+  value is never logged and never returned.
+- Storage: one row per `(person_id, route_key, key)`. `request_hash` is a
+  SHA-256 over the request method, path and raw body, so the same key with a
+  different request is a 422 `IDEMPOTENCY_KEY_REUSED`; a different person or a
+  different route is independent.
+- Replay: only a 2xx response is stored, and a replay returns the exact stored
+  status and body without calling the service. A 4xx is never stored, so a
+  corrected retry can succeed.
+- Expiry: `API_IDEMPOTENCY_KEY_HOURS` (default 24). An expired row behaves as
+  absent. `cleanup_expired(connection, now, batch_limit)` deletes expired rows
+  in bounded batches; it is a function, not a scheduler.
+- Limitations recorded in `docs/KNOWN_GAPS.md`: a crash between the service
+  commit and the idempotency insert can lose the stored response (the retry
+  then re-runs the operation, which the services treat idempotently where they
+  can), and a 4xx response is deliberately not replayed.
+
+---
+
 ## 5. Exact migration SQL (planned, full file)
 
 ### `0024_auth_sessions.sql` (FR-ROS-03, FR-AUT-01)
@@ -493,6 +523,7 @@ Mutation list:
 | W1 | 0024 + `auth.py` (OTP, sessions, rate limit) | C1 |
 | W2 | transport/routing/errors/serializers (O12-1) | C2 |
 | W3 | review + task routes wired to services | C3 |
+| W3b | owner-A2 idempotency keys (0025, header, replay, cleanup; §4.7) | C3a |
 | W4 | approvals + notifications + admin routes | C3 |
 | W5 | matrix table + 48-cell tests | C4 |
 | W6 | visibility + dashboard payloads | C5 |

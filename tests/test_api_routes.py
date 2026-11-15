@@ -71,17 +71,40 @@ def _schema_routes(app: Any) -> dict[str, tuple[str, ...]]:
     }
 
 
-def test_route_table_is_exactly_the_five_approved_routes(
+def test_route_table_is_exactly_the_classified_routes(
     harness: ApiHarness,
 ) -> None:
-    """No docs, no OpenAPI, no debug route: five classified paths only."""
-    assert _schema_routes(harness.app) == {
+    """No docs, no OpenAPI, no debug route: every path has a matrix row."""
+    schema = _schema_routes(harness.app)
+    assert {
         "/healthz": ("get",),
         f"{BASE}/otp": ("post",),
         f"{BASE}/verify": ("post",),
         f"{BASE}/logout": ("post",),
         "/me": ("get",),
-    }
+        "/tasks": ("get",),
+        "/tasks/{task_id}": ("get", "patch"),
+        "/tasks/{task_id}/claims": ("post",),
+        "/tasks/{task_id}/agreement": ("post",),
+        "/tasks/{task_id}/status": ("post",),
+        "/tasks/{task_id}/reassign": ("post",),
+        "/tasks/{task_id}/cancel": ("post",),
+        "/proposals/{proposal_id}": ("get",),
+        "/proposals/{proposal_id}/edits": ("post",),
+        "/proposals/{proposal_id}/accept": ("post",),
+        "/proposals/{proposal_id}/reject": ("post",),
+        "/approvals": ("get",),
+        "/approvals/{request_id}": ("get",),
+        "/approvals/{request_id}/decision": ("post",),
+        "/notifications": ("get",),
+        "/notifications/{notification_id}/read": ("post",),
+        "/push-endpoints": ("post",),
+        "/push-endpoints/{endpoint_id}": ("delete",),
+        "/admin/denials": ("get",),
+        "/admin/attempts": ("get",),
+        "/admin/config": ("get",),
+        "/admin/evaluation/export": ("get",),
+    } == schema
 
 
 def test_docs_redoc_and_openapi_are_not_served(harness: ApiHarness) -> None:

@@ -32,7 +32,9 @@ NOW = "2026-11-13T09:00:00+00:00"
 
 ADMIN_ROLL = "R-ADMIN"
 HEAD_ROLL = "R-HEAD"
+AH_ROLL = "R-AH"
 VOLUNTEER_ROLL = "R-VOL"
+VOLUNTEER2_ROLL = "R-VOL2"
 INACTIVE_ROLL = "R-INACTIVE"
 NO_DISCORD_ROLL = "R-NODIS"
 UNKNOWN_ROLL = "R-NOBODY"
@@ -91,6 +93,11 @@ def call(
     content_length: int | None = None,
 ) -> ApiResponse:
     """Drive one request through the ASGI app without a network socket."""
+    if "?" in path:
+        base, _, inline_query = path.partition("?")
+        path = base
+        if query == "":
+            query = inline_query
     payload = body
     if json_body is not None:
         payload = json.dumps(json_body).encode("utf-8")
@@ -190,7 +197,7 @@ def seed_database(database: Path) -> None:
             3,
             "AH One",
             "AH",
-            "R-AH",
+            AH_ROLL,
             "100000000000000003",
             1,
             reports_to=2,
@@ -218,6 +225,16 @@ def seed_database(database: Path) -> None:
         )
         _add_person(
             connection, 6, "No Discord", "Volunteer", NO_DISCORD_ROLL, None, 1
+        )
+        _add_person(
+            connection,
+            7,
+            "Volunteer Two",
+            "Volunteer",
+            VOLUNTEER2_ROLL,
+            "100000000000000007",
+            1,
+            reports_to=3,
         )
     finally:
         connection.close()
@@ -343,3 +360,342 @@ def build_harness(
     recording = RecordingOtpSender() if sender is None else sender
     app = build_app(database, clock=clock, sender=recording, config=config)
     return ApiHarness(app=app, clock=clock, sender=recording, database=database)
+
+
+# --- business fixtures for the W3/W4 route tests --------------------------
+
+#: Fixed instants for the synthetic task/proposal rows.
+WORLD_AT = "2026-11-01T09:58:00+00:00"
+GENERATED_AT = "2026-11-01T09:59:00+00:00"
+
+
+def seed_world(database: Path) -> None:
+    """Add the groups and buckets a proposal/task chain needs.
+
+    ``seed_database`` stays the roster-only fixture the W2 tests rely on; this
+    adds the processing rows on top without changing any existing row.
+    """
+    connection = connect(database)
+    try:
+        connection.execute(
+            "INSERT INTO source_group (id, discord_channel_id, vertical_id)"
+            " VALUES (1, 'chan-1', 1)"
+        )
+        connection.execute(
+            "INSERT INTO source_group (id, discord_channel_id, vertical_id)"
+            " VALUES (2, 'chan-2', 2)"
+        )
+        for bucket_id, group_id in ((1, 1), (2, 2)):
+            connection.execute(
+                "INSERT INTO bucket (id, group_id, start_event_timestamp,"
+                " end_event_timestamp) VALUES (?, ?, ?, ?)",
+                (bucket_id, group_id, WORLD_AT, WORLD_AT),
+            )
+    finally:
+        connection.close()
+
+
+def _connection(database: Path) -> sqlite3.Connection:
+    return connect(database)
+
+
+def make_proposal(
+    database: Path,
+    *,
+    sender_person_id: int = 3,
+    ptype: str = "TASK",
+    description: str | None = "Arrange the generator",
+    assignment_mode: str = "EXPLICIT",
+    task_type: str = "INTERNAL",
+    responsible_vertical_id: int | None = None,
+    people_needed: int | None = None,
+    people_needed_unlimited: int = 0,
+    assignees: tuple[tuple[str, str, int | None, str | None], ...] = (),
+) -> int:
+    """Insert one primary message and its generated proposal; return its id."""
+    connection = _connection(database)
+    try:
+        with connection:
+            message_id = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(id), 0) + 1 AS n FROM source_message"
+                ).fetchone()["n"]
+            )
+            connection.execute(
+                "INSERT INTO source_message (id, source, source_message_id,"
+                " group_id, sender_person_id, event_timestamp, received_at,"
+                " content) VALUES (?, 'discord', ?, 1, ?, ?, ?, ?)",
+                (
+                    message_id,
+                    f"primary-{message_id}",
+                    sender_person_id,
+                    GENERATED_AT,
+                    GENERATED_AT,
+                    "primary line",
+                ),
+            )
+            connection.execute(
+                "INSERT INTO bucket_message (bucket_id, message_id, group_id)"
+                " VALUES (1, ?, 1)",
+                (message_id,),
+            )
+            attempt_id = int(
+                connection.execute(
+                    "INSERT INTO processing_attempt (stage, bucket_id,"
+                    " started_at, outcome, model_id, model_version,"
+                    " config_version) VALUES ('proposal_generation', 1, ?,"
+                    " 'SUCCEEDED', 'model-p', '1.0.0', 'prompt-1')",
+                    (GENERATED_AT,),
+                ).lastrowid
+                or 0
+            )
+            assignees_text = ", ".join(row[0] for row in assignees) or None
+            proposal_id = int(
+                connection.execute(
+                    "INSERT INTO proposal (attempt_id, bucket_id,"
+                    " primary_message_id, ptype, description, assignment_mode,"
+                    " proposed_assignees_text, people_needed,"
+                    " people_needed_unlimited, task_type, source_vertical_id,"
+                    " suggested_responsible_vertical_id, structurally_valid,"
+                    " generated_at, model_id, model_version, prompt_version)"
+                    " VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?,"
+                    " 'model-p', '1.0.0', 'prompt-1')",
+                    (
+                        attempt_id,
+                        message_id,
+                        ptype,
+                        description,
+                        assignment_mode,
+                        assignees_text,
+                        people_needed,
+                        people_needed_unlimited,
+                        task_type,
+                        responsible_vertical_id,
+                        GENERATED_AT,
+                    ),
+                ).lastrowid
+                or 0
+            )
+            for text, resolution, person_id, resolved_via in assignees:
+                connection.execute(
+                    "INSERT INTO proposal_assignee (proposal_id, assignee_text,"
+                    " resolution, person_id, resolved_via)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (proposal_id, text, resolution, person_id, resolved_via),
+                )
+            return proposal_id
+    finally:
+        connection.close()
+
+
+def make_task(
+    database: Path,
+    *,
+    creator_id: int = 3,
+    source_vertical_id: int = 1,
+    responsible_vertical_id: int | None = None,
+    assignment_mode: str = "EXPLICIT",
+    people_needed: int | None = None,
+    people_needed_unlimited: int = 0,
+    approval_state: str = "NOT_REQUIRED",
+    cancellation: str = "ACTIVE",
+    description: str = "Arrange the generator",
+) -> int:
+    """Insert one message/attempt/proposal/task chain; return the task id."""
+    if responsible_vertical_id is None:
+        responsible_vertical_id = source_vertical_id
+    task_type = (
+        "INTERNAL" if source_vertical_id == responsible_vertical_id
+        else "CROSS_VERTICAL"
+    )
+    connection = _connection(database)
+    try:
+        with connection:
+            message_id = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(id), 0) + 1 AS n FROM source_message"
+                ).fetchone()["n"]
+            )
+            connection.execute(
+                "INSERT INTO source_message (id, source, source_message_id,"
+                " group_id, sender_person_id, event_timestamp, received_at,"
+                " content) VALUES (?, 'discord', ?, 1, ?, ?, ?, 'primary line')",
+                (message_id, f"task-{message_id}", creator_id, WORLD_AT, WORLD_AT),
+            )
+            connection.execute(
+                "INSERT INTO bucket_message (bucket_id, message_id, group_id)"
+                " VALUES (1, ?, 1)",
+                (message_id,),
+            )
+            attempt_id = int(
+                connection.execute(
+                    "INSERT INTO processing_attempt (stage, bucket_id,"
+                    " started_at, outcome) VALUES ('proposal_generation', 1, ?,"
+                    " 'SUCCEEDED')",
+                    (GENERATED_AT,),
+                ).lastrowid
+                or 0
+            )
+            proposal_id = int(
+                connection.execute(
+                    "INSERT INTO proposal (attempt_id, bucket_id,"
+                    " primary_message_id, source_vertical_id, ptype,"
+                    " assignment_mode, task_type, people_needed,"
+                    " people_needed_unlimited, structurally_valid, generated_at,"
+                    " model_id, model_version, prompt_version)"
+                    " VALUES (?, 1, ?, ?, 'TASK', ?, ?, ?, ?, 1, ?, 'model-p',"
+                    " '1.0.0', 'prompt-1')",
+                    (
+                        attempt_id,
+                        message_id,
+                        source_vertical_id,
+                        assignment_mode,
+                        task_type,
+                        people_needed,
+                        people_needed_unlimited,
+                        GENERATED_AT,
+                    ),
+                ).lastrowid
+                or 0
+            )
+            return int(
+                connection.execute(
+                    "INSERT INTO task (proposal_id, task_type,"
+                    " source_vertical_id, responsible_vertical_id, creator_id,"
+                    " description, assignment_mode, people_needed,"
+                    " people_needed_unlimited, approval_state, cancellation,"
+                    " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        proposal_id,
+                        task_type,
+                        source_vertical_id,
+                        responsible_vertical_id,
+                        creator_id,
+                        description,
+                        assignment_mode,
+                        people_needed,
+                        people_needed_unlimited,
+                        approval_state,
+                        cancellation,
+                        WORLD_AT,
+                    ),
+                ).lastrowid
+                or 0
+            )
+    finally:
+        connection.close()
+
+
+def assign(
+    database: Path,
+    task_id: int,
+    person_id: int,
+    *,
+    agreement: str = "ACCEPTED",
+    work_status: str = "NOT_STARTED",
+    cancelled: int = 0,
+) -> int:
+    """Insert one task assignment row and return its id."""
+    connection = _connection(database)
+    try:
+        with connection:
+            return int(
+                connection.execute(
+                    "INSERT INTO task_assignee (task_id, person_id, agreement,"
+                    " agreed_at, work_status, cancelled, added_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        task_id,
+                        person_id,
+                        agreement,
+                        None if agreement == "AWAITING" else WORLD_AT,
+                        work_status,
+                        cancelled,
+                        WORLD_AT,
+                    ),
+                ).lastrowid
+                or 0
+            )
+    finally:
+        connection.close()
+
+
+def make_approval(
+    database: Path,
+    task_id: int,
+    *,
+    requested_by: int = 3,
+    recipients: tuple[int, ...] = (2, 3),
+    message: str | None = "Please approve the cross-vertical task",
+) -> int:
+    """Insert one approval request and its recipients; return its id."""
+    connection = _connection(database)
+    try:
+        with connection:
+            request_id = int(
+                connection.execute(
+                    "INSERT INTO approval_request (task_id, requested_by,"
+                    " request_message, created_at) VALUES (?, ?, ?, ?)",
+                    (task_id, requested_by, message, WORLD_AT),
+                ).lastrowid
+                or 0
+            )
+            for person_id in recipients:
+                connection.execute(
+                    "INSERT INTO approval_recipient (request_id, person_id)"
+                    " VALUES (?, ?)",
+                    (request_id, person_id),
+                )
+            return request_id
+    finally:
+        connection.close()
+
+
+def make_notification(
+    database: Path,
+    *,
+    recipient_person_id: int = 4,
+    event_type: str = "WORK_COMPLETED",
+    task_id: int,
+    dedupe_key: str | None = None,
+) -> int:
+    """Insert one notification row for a task; return its id."""
+    connection = _connection(database)
+    try:
+        with connection:
+            return int(
+                connection.execute(
+                    "INSERT INTO notification (event_type,"
+                    " recipient_person_id, dedupe_key, task_id, delivery_state,"
+                    " created_at) VALUES (?, ?, ?, ?, 'PENDING', ?)",
+                    (
+                        event_type,
+                        recipient_person_id,
+                        dedupe_key or f"{event_type}:{task_id}:{recipient_person_id}",
+                        task_id,
+                        WORLD_AT,
+                    ),
+                ).lastrowid
+                or 0
+            )
+    finally:
+        connection.close()
+
+
+def query(
+    database: Path, sql: str, parameters: tuple[object, ...] = ()
+) -> list[sqlite3.Row]:
+    """Read rows from the fixture database; tests only, never the API."""
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    try:
+        return connection.execute(sql, parameters).fetchall()
+    finally:
+        connection.close()
+
+
+def count(database: Path, table: str, where: str = "", parameters: tuple[object, ...] = ()) -> int:
+    """Count rows in one table, optionally filtered."""
+    suffix = "" if where == "" else f" WHERE {where}"
+    row = query(database, f"SELECT COUNT(*) AS n FROM {table}{suffix}", parameters)[0]
+    return int(row["n"])

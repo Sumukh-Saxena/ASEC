@@ -64,7 +64,7 @@ def _basis(connection: sqlite3.Connection, message_id: int) -> str | None:
 
 
 def test_migration_0019_applies_and_reapplies(conn: sqlite3.Connection) -> None:
-    assert _versions(conn) == list(range(1, 25))
+    assert _versions(conn) == list(range(1, 26))
     assert apply_migrations(conn) == []
 
 

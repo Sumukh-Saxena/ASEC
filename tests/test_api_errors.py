@@ -47,6 +47,7 @@ def test_the_error_table_is_exactly_the_agreed_statuses() -> None:
         "NOT_FOUND": 404,
         "CONFLICT": 409,
         "INVALID_REQUEST": 422,
+        "IDEMPOTENCY_KEY_REUSED": 422,
         "RATE_LIMITED": 429,
         "INTERNAL_ERROR": 500,
     }

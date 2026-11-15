@@ -409,6 +409,124 @@ def load_api_settings(config: Config) -> ApiSettings:
     )
 
 
+#: W3 owner decision A2: idempotency keys on mutating routes. The replay window
+#: is policy, so it is configuration and validated here, never hard-coded.
+DEFAULT_API_IDEMPOTENCY_KEY_HOURS = 24
+DEFAULT_API_IDEMPOTENCY_KEY_MIN_LENGTH = 16
+DEFAULT_API_IDEMPOTENCY_KEY_MAX_LENGTH = 64
+DEFAULT_API_IDEMPOTENCY_CLEANUP_BATCH = 100
+
+API_IDEMPOTENCY_KEY_HOURS_KEY = "API_IDEMPOTENCY_KEY_HOURS"
+API_IDEMPOTENCY_KEY_MIN_LENGTH_KEY = "API_IDEMPOTENCY_KEY_MIN_LENGTH"
+API_IDEMPOTENCY_KEY_MAX_LENGTH_KEY = "API_IDEMPOTENCY_KEY_MAX_LENGTH"
+API_IDEMPOTENCY_CLEANUP_BATCH_KEY = "API_IDEMPOTENCY_CLEANUP_BATCH"
+
+#: The idempotency table's own CHECK pins 16..64 characters, so configuration
+#: is bounded by the schema rather than being allowed to disagree with it.
+_IDEMPOTENCY_KEY_MINIMUM = 16
+_IDEMPOTENCY_KEY_MAXIMUM = 64
+
+
+@dataclass(frozen=True)
+class IdempotencySettings:
+    """Validated idempotency-key policy (owner A2, migration 0025)."""
+
+    key_hours: int = DEFAULT_API_IDEMPOTENCY_KEY_HOURS
+    min_length: int = DEFAULT_API_IDEMPOTENCY_KEY_MIN_LENGTH
+    max_length: int = DEFAULT_API_IDEMPOTENCY_KEY_MAX_LENGTH
+    cleanup_batch: int = DEFAULT_API_IDEMPOTENCY_CLEANUP_BATCH
+
+
+def load_idempotency_settings(config: Config) -> IdempotencySettings:
+    """Build :class:`IdempotencySettings`; an impossible window is refused."""
+    minimum = _bounded_int(
+        config,
+        API_IDEMPOTENCY_KEY_MIN_LENGTH_KEY,
+        DEFAULT_API_IDEMPOTENCY_KEY_MIN_LENGTH,
+        minimum=_IDEMPOTENCY_KEY_MINIMUM,
+        maximum=_IDEMPOTENCY_KEY_MAXIMUM,
+    )
+    maximum = _bounded_int(
+        config,
+        API_IDEMPOTENCY_KEY_MAX_LENGTH_KEY,
+        DEFAULT_API_IDEMPOTENCY_KEY_MAX_LENGTH,
+        minimum=_IDEMPOTENCY_KEY_MINIMUM,
+        maximum=_IDEMPOTENCY_KEY_MAXIMUM,
+    )
+    if maximum < minimum:
+        raise ConfigError(
+            f"{API_IDEMPOTENCY_KEY_MAX_LENGTH_KEY} must be at least"
+            f" {API_IDEMPOTENCY_KEY_MIN_LENGTH_KEY}"
+        )
+    return IdempotencySettings(
+        key_hours=_positive_int(
+            config,
+            API_IDEMPOTENCY_KEY_HOURS_KEY,
+            DEFAULT_API_IDEMPOTENCY_KEY_HOURS,
+        ),
+        min_length=minimum,
+        max_length=maximum,
+        cleanup_batch=_positive_int(
+            config,
+            API_IDEMPOTENCY_CLEANUP_BATCH_KEY,
+            DEFAULT_API_IDEMPOTENCY_CLEANUP_BATCH,
+        ),
+    )
+
+
+#: W3/W4: page sizes are configuration so a client can never ask for an
+#: unbounded response (NFR-REL-06).
+DEFAULT_API_TASKS_PAGE_DEFAULT = 50
+DEFAULT_API_TASKS_PAGE_MAX = 200
+DEFAULT_API_ADMIN_READ_LIMIT = 500
+
+API_TASKS_PAGE_DEFAULT_KEY = "API_TASKS_PAGE_DEFAULT"
+API_TASKS_PAGE_MAX_KEY = "API_TASKS_PAGE_MAX"
+API_ADMIN_READ_LIMIT_KEY = "API_ADMIN_READ_LIMIT"
+
+
+@dataclass(frozen=True)
+class ApiReadSettings:
+    """Validated page limits for the task and admin read routes (W3/W4)."""
+
+    tasks_page_default: int = DEFAULT_API_TASKS_PAGE_DEFAULT
+    tasks_page_max: int = DEFAULT_API_TASKS_PAGE_MAX
+    admin_read_limit: int = DEFAULT_API_ADMIN_READ_LIMIT
+
+
+def load_api_read_settings(config: Config) -> ApiReadSettings:
+    """Build :class:`ApiReadSettings`; the default must fit inside the cap."""
+    default = _bounded_int(
+        config,
+        API_TASKS_PAGE_DEFAULT_KEY,
+        DEFAULT_API_TASKS_PAGE_DEFAULT,
+        minimum=1,
+        maximum=1000,
+    )
+    maximum = _bounded_int(
+        config,
+        API_TASKS_PAGE_MAX_KEY,
+        DEFAULT_API_TASKS_PAGE_MAX,
+        minimum=1,
+        maximum=1000,
+    )
+    if maximum < default:
+        raise ConfigError(
+            f"{API_TASKS_PAGE_MAX_KEY} must be at least {API_TASKS_PAGE_DEFAULT_KEY}"
+        )
+    return ApiReadSettings(
+        tasks_page_default=default,
+        tasks_page_max=maximum,
+        admin_read_limit=_bounded_int(
+            config,
+            API_ADMIN_READ_LIMIT_KEY,
+            DEFAULT_API_ADMIN_READ_LIMIT,
+            minimum=1,
+            maximum=5000,
+        ),
+    )
+
+
 def _boolean(config: Config, name: str, *, default: bool) -> bool:
     raw = config.get(name)
     if raw is None or raw.strip() == "":

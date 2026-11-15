@@ -17,6 +17,7 @@ import secrets
 import sqlite3
 import time
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from backend.api import ApiConfigurationError
 from backend.api.errors import (
@@ -26,7 +27,12 @@ from backend.api.errors import (
     error_body,
     status_for,
 )
-from backend.config import Config, load_auth_settings
+from backend.config import (
+    Config,
+    load_api_read_settings,
+    load_auth_settings,
+    load_idempotency_settings,
+)
 from backend.notification_delivery import OtpSender, OtpSenderNotConfigured
 
 #: The optional extra install command; it is a command, not a secret.
@@ -73,6 +79,8 @@ def create_app(
 ) -> FastAPI:
     """Build the API app. Invalid configuration fails here, before any bind."""
     auth_settings = load_auth_settings(config)
+    idempotency_settings = load_idempotency_settings(config)
+    read_settings = load_api_read_settings(config)
     app = FastAPI(
         title="ASEC API",
         docs_url=None,
@@ -83,6 +91,8 @@ def create_app(
     app.state.now = now
     app.state.config = config
     app.state.auth_settings = auth_settings
+    app.state.idempotency_settings = idempotency_settings
+    app.state.read_settings = read_settings
     app.state.otp_sender = (
         _UnconfiguredOtpSender() if otp_sender is None else otp_sender
     )
@@ -119,6 +129,9 @@ def _register_request_guard(app: FastAPI) -> None:
                 rejected: Response = _error_response(request, "INVALID_REQUEST")
                 _log_request(request, rejected.status_code, request_id, started)
                 return rejected
+        # Cache the raw body once: the idempotency digest is over the exact
+        # bytes the client sent, and the framework reads the same cached copy.
+        request.state.raw_body = await request.body()
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         _log_request(request, response.status_code, request_id, started)
@@ -146,7 +159,7 @@ def _log_request(
 def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
-        return _error_response(request, exc.code)
+        return _error_response(request, exc.code, exc.payload)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation(
@@ -177,10 +190,14 @@ def _request_id(request: Request) -> str:
     return "-" if value is None else str(value)
 
 
-def _error_response(request: Request, code: str) -> JSONResponse:
+def _error_response(
+    request: Request,
+    code: str,
+    payload: dict[str, Any] | None = None,
+) -> JSONResponse:
     request_id = _request_id(request)
     return JSONResponse(
         status_code=status_for(code),
-        content=error_body(code, request_id),
+        content=error_body(code, request_id, payload),
         headers={"X-Request-ID": request_id},
     )
