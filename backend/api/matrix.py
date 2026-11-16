@@ -22,13 +22,28 @@ from dataclasses import dataclass
 from backend.authorization import record_denial
 
 #: The four roster roles (0016's CHECK makes any other value unreachable).
-ALL_ROLES = frozenset({"Admin", "Head", "AH", "Volunteer"})
+ROLE_ORDER: tuple[str, ...] = ("Admin", "Head", "AH", "Volunteer")
+ALL_ROLES = frozenset(ROLE_ORDER)
 REVIEW_ROLES = frozenset({"Admin", "Head", "AH"})
 VOLUNTEER_ROLES = frozenset({"Volunteer"})
 ADMIN_ROLES = frozenset({"Admin"})
 
 REASON_NOT_ROLE = "NOT_ROLE"
+REASON_NOT_OWNER = "NOT_OWNER"
+REASON_NOT_VERTICAL = "NOT_VERTICAL"
 REASON_INACTIVE = "INACTIVE"
+REASON_NOT_RECIPIENT = "NOT_RECIPIENT"
+
+#: The only reason tokens a route-level denial may carry (plan §4.4).
+STABLE_REASONS = frozenset(
+    {
+        REASON_NOT_ROLE,
+        REASON_NOT_OWNER,
+        REASON_NOT_VERTICAL,
+        REASON_INACTIVE,
+        REASON_NOT_RECIPIENT,
+    }
+)
 
 #: Subject type recorded with a route-level denial.
 SUBJECT_NONE = "NONE"
@@ -50,12 +65,295 @@ class RouteAuthorizationError(Exception):
         super().__init__(reason)
 
 
+class CellKind:
+    """The SRS matrix cell vocabulary, normalised to five machine values."""
+
+    YES = "YES"
+    OWN = "OWN"
+    SCOPE = "SCOPE"
+    OVERRIDE = "OVERRIDE"
+    NO = "NO"
+    ALL = frozenset({YES, OWN, SCOPE, OVERRIDE, NO})
+
+
+@dataclass(frozen=True)
+class Cell:
+    """One FR-AUT-04 cell: the exact wording plus its normalised kind.
+
+    ``needs_owner`` marks a cell whose SRS wording has more than one reading.
+    The report lists those cells; the code uses the more restrictive reading.
+    """
+
+    kind: str
+    wording: str
+    needs_owner: bool = False
+
+    def __post_init__(self) -> None:
+        if self.kind not in CellKind.ALL:
+            raise ValueError(f"unknown matrix cell kind {self.kind!r}")
+        if self.wording.strip() == "":
+            raise ValueError("a matrix cell needs its SRS wording")
+
+
+@dataclass(frozen=True)
+class MatrixOperation:
+    """One row of the FR-AUT-04 table and the routes that implement it."""
+
+    name: str
+    srs_wording: str
+    subject_type: str
+    cells: Mapping[str, Cell]
+    route_operations: tuple[str, ...] = ()
+    note: str = ""
+
+
+def _cells(
+    admin: Cell,
+    head: Cell,
+    ah: Cell,
+    volunteer: Cell,
+) -> Mapping[str, Cell]:
+    return {"Admin": admin, "Head": head, "AH": ah, "Volunteer": volunteer}
+
+
+#: The twelve FR-AUT-04 rows, in SRS order. ``O12-5`` is binding: the cells
+#: added by O7-3, O7-5 and O8-1 are part of the production baseline, so Admin's
+#: "Accept or deny an assigned task; update own work status" cell is OVERRIDE
+#: (O7-3/O7-5) even though the printed SRS table shows "—".
+FR_AUT_OPERATIONS: tuple[MatrixOperation, ...] = (
+    MatrixOperation(
+        name="REVIEW_OWN_PROPOSAL",
+        srs_wording="Receive and review own proposals",
+        subject_type=SUBJECT_PROPOSAL,
+        cells=_cells(
+            Cell(CellKind.OVERRIDE, "Override"),
+            Cell(CellKind.YES, "Yes"),
+            Cell(CellKind.YES, "Yes"),
+            Cell(CellKind.NO, "—"),
+        ),
+        route_operations=("PROPOSAL_VIEW",),
+        note="'Own' is the proposal's reviewer/sender (Phase 6 routing).",
+    ),
+    MatrixOperation(
+        name="DECIDE_PROPOSAL",
+        srs_wording="Edit, accept or reject a proposal",
+        subject_type=SUBJECT_PROPOSAL,
+        cells=_cells(
+            Cell(CellKind.OVERRIDE, "Override"),
+            Cell(CellKind.OWN, "Own proposals"),
+            Cell(CellKind.OWN, "Own proposals"),
+            Cell(CellKind.NO, "—"),
+        ),
+        route_operations=("PROPOSAL_EDIT", "PROPOSAL_ACCEPT", "PROPOSAL_REJECT"),
+        note="'Own proposals' = the proposal assigned to the actor as reviewer.",
+    ),
+    MatrixOperation(
+        name="CREATE_TASK_OWN_VERTICAL",
+        srs_wording="Create a task in own vertical (by accepting)",
+        subject_type=SUBJECT_PROPOSAL,
+        cells=_cells(
+            Cell(CellKind.YES, "Yes"),
+            Cell(CellKind.YES, "Yes"),
+            Cell(CellKind.YES, "Yes"),
+            Cell(CellKind.NO, "—"),
+        ),
+        route_operations=("PROPOSAL_ACCEPT",),
+        note=(
+            "NEEDS-OWNER: 'own vertical' can mean (i) the proposal's source"
+            " vertical must be one of the actor's current verticals, or (ii)"
+            " the actor owns the proposal and the task is created in its source"
+            " vertical. The service implements (ii); (i) would be a new domain"
+            " rule. The more restrictive test uses (ii) and a reviewer in the"
+            " source vertical."
+        ),
+    ),
+    MatrixOperation(
+        name="RAISE_CROSS_VERTICAL",
+        srs_wording="Raise a cross-vertical task",
+        subject_type=SUBJECT_PROPOSAL,
+        cells=_cells(
+            Cell(CellKind.YES, "Yes"),
+            Cell(CellKind.YES, "Directly"),
+            Cell(CellKind.SCOPE, "By approval"),
+            Cell(CellKind.NO, "—"),
+        ),
+        route_operations=("PROPOSAL_ACCEPT",),
+        note="Head accepts directly; AH acceptance opens an approval request.",
+    ),
+    MatrixOperation(
+        name="DECIDE_CROSS_VERTICAL",
+        srs_wording="Approve or deny a cross-vertical request",
+        subject_type=SUBJECT_APPROVAL_REQUEST,
+        cells=_cells(
+            Cell(CellKind.YES, "Yes"),
+            Cell(CellKind.SCOPE, "Target vertical"),
+            Cell(CellKind.SCOPE, "Target vertical"),
+            Cell(CellKind.NO, "—"),
+        ),
+        route_operations=("APPROVAL_LIST", "APPROVAL_READ", "APPROVAL_DECIDE"),
+        note=(
+            "O8-1: Admin may decide any pending request without being a"
+            " recipient. Listing and reading a request are part of this"
+            " surface: the decision is impossible without seeing it."
+        ),
+    ),
+    MatrixOperation(
+        name="MANAGE_TASK",
+        srs_wording="Edit, reassign or cancel a task",
+        subject_type=SUBJECT_TASK,
+        cells=_cells(
+            Cell(CellKind.YES, "Yes"),
+            Cell(
+                CellKind.SCOPE,
+                "Tasks they created, or whose responsible vertical is theirs",
+            ),
+            Cell(CellKind.SCOPE, "Tasks they created"),
+            Cell(CellKind.NO, "—"),
+        ),
+        route_operations=("TASK_EDIT", "TASK_REASSIGN", "TASK_CANCEL"),
+    ),
+    MatrixOperation(
+        name="CLAIM_TASK",
+        srs_wording="Claim an open task",
+        subject_type=SUBJECT_TASK,
+        cells=_cells(
+            Cell(CellKind.NO, "—"),
+            Cell(CellKind.NO, "—"),
+            Cell(CellKind.NO, "—"),
+            Cell(CellKind.SCOPE, "Own vertical"),
+        ),
+        route_operations=("TASK_CLAIM",),
+    ),
+    MatrixOperation(
+        name="ASSIGNMENT_ACTION",
+        srs_wording="Accept or deny an assigned task; update own work status",
+        subject_type=SUBJECT_TASK,
+        cells=_cells(
+            Cell(CellKind.OVERRIDE, "— (O7-3/O7-5: override)"),
+            Cell(CellKind.SCOPE, "Own assignments"),
+            Cell(CellKind.SCOPE, "Own assignments"),
+            Cell(CellKind.SCOPE, "Own assignments"),
+        ),
+        route_operations=("TASK_AGREEMENT", "TASK_STATUS"),
+        note=(
+            "The printed SRS cell for Admin is '—'; O7-3 (accept/deny on an"
+            " assignee's behalf) and O7-5 (work-status override) add the Admin"
+            " override cell, and O12-5 approves those additions."
+        ),
+    ),
+    MatrixOperation(
+        name="SEE_PROGRESS",
+        srs_wording="See per-volunteer progress",
+        subject_type=SUBJECT_TASK,
+        cells=_cells(
+            Cell(CellKind.YES, "All"),
+            Cell(CellKind.SCOPE, "Own vertical"),
+            Cell(
+                CellKind.SCOPE,
+                "Tasks they created, and volunteers under them",
+            ),
+            Cell(CellKind.SCOPE, "Own tasks only"),
+        ),
+        route_operations=(
+            "TASK_LIST",
+            "TASK_VIEW",
+            "DASHBOARD_VOLUNTEER",
+            "DASHBOARD_AH",
+            "DASHBOARD_HEAD",
+        ),
+        note=(
+            "Task visibility supplies the task half; the hierarchy half"
+            " ('volunteers under them') is implemented by"
+            " backend.visibility and tested in test_api_visibility.py. The"
+            " three role dashboards read the same row, each restricted to its"
+            " own role plus Admin's Yes/All cell."
+        ),
+    ),
+    MatrixOperation(
+        name="PUSH_ANNOUNCEMENT",
+        srs_wording="Push announcements",
+        subject_type=SUBJECT_PROPOSAL,
+        cells=_cells(
+            Cell(
+                CellKind.NO,
+                "— (reachable through row 2's proposal-accept override)",
+                needs_owner=True,
+            ),
+            Cell(CellKind.SCOPE, "To own vertical"),
+            Cell(CellKind.SCOPE, "To volunteers under them"),
+            Cell(CellKind.NO, "—"),
+        ),
+        route_operations=("PROPOSAL_ACCEPT",),
+        note=(
+            "There is no separate broadcast route; accepting the announcement"
+            " is the operation. NEEDS-OWNER: Admin's '—' cannot be enforced"
+            " without a broadcast-specific rule, because accepting an"
+            " announcement is accepting a proposal and row 2 gives Admin"
+            " Override there. The cell is recorded, and the test asserts the"
+            " implemented behaviour instead of inventing a denial."
+        ),
+    ),
+    MatrixOperation(
+        name="VIEW_INTERNALS",
+        srs_wording="View processing records, model results, configuration",
+        subject_type=SUBJECT_ADMIN,
+        cells=_cells(
+            Cell(CellKind.YES, "Yes"),
+            Cell(CellKind.NO, "—"),
+            Cell(CellKind.NO, "—"),
+            Cell(CellKind.NO, "—"),
+        ),
+        route_operations=(
+            "ADMIN_DENIALS",
+            "ADMIN_ATTEMPTS",
+            "ADMIN_CONFIG",
+            "ADMIN_EVALUATION_EXPORT",
+            "DASHBOARD_ADMIN",
+            "ADMIN_BACKLOG",
+        ),
+    ),
+    MatrixOperation(
+        name="CHANGE_ROSTER",
+        srs_wording="Change roster data",
+        subject_type=SUBJECT_PERSON,
+        cells=_cells(
+            Cell(CellKind.YES, "Yes"),
+            Cell(CellKind.NO, "—"),
+            Cell(CellKind.NO, "—"),
+            Cell(CellKind.NO, "—"),
+        ),
+        route_operations=(),
+        note=(
+            "No MVP route: O12-4/FR-ROS-02. The matrix cell is data-only; the"
+            " tests assert the gap rather than inventing a route."
+        ),
+    ),
+)
+
+MATRIX_OPERATIONS: Mapping[str, MatrixOperation] = {
+    operation.name: operation for operation in FR_AUT_OPERATIONS
+}
+
+
+def _matrix_roles(*names: str) -> frozenset[str]:
+    """The union of roles admitted by the named FR-AUT-04 rows."""
+    roles: set[str] = set()
+    for name in names:
+        for role, cell in MATRIX_OPERATIONS[name].cells.items():
+            if cell.kind != CellKind.NO:
+                roles.add(role)
+    return frozenset(roles)
+
+
 @dataclass(frozen=True)
 class Operation:
     """One classified route surface.
 
     ``scope`` is the plain-language statement of who the row admits; it is
     documentation that the tests keep non-empty, not a rule the code reads.
+    ``matrix_operations`` names the FR-AUT-04 rows this route implements; the
+    domain rows derive their role set from the matrix, so there is no second
+    copy of the 12x4 table.
     """
 
     name: str
@@ -63,6 +361,7 @@ class Operation:
     subject_type: str
     allowed_roles: frozenset[str]
     denial_reason: str
+    matrix_operations: tuple[str, ...] = ()
     public: bool = False
 
 
@@ -70,14 +369,19 @@ def _role_operation(
     name: str,
     scope: str,
     subject_type: str,
-    roles: frozenset[str],
+    roles: frozenset[str] | None = None,
+    *,
+    matrix_operations: tuple[str, ...] = (),
 ) -> Operation:
+    if roles is None:
+        roles = _matrix_roles(*matrix_operations)
     return Operation(
         name=name,
         scope=scope,
         subject_type=subject_type,
         allowed_roles=roles,
         denial_reason=REASON_NOT_ROLE,
+        matrix_operations=matrix_operations,
     )
 
 
@@ -91,6 +395,24 @@ def _public_operation(name: str, scope: str, subject_type: str) -> Operation:
         public=True,
     )
 
+
+#: Routes that no FR-AUT-04 row describes: they either are public, act on the
+#: caller's own session/identity, or act on the caller's own notifications and
+#: devices. They keep an explicit role set instead of deriving one from the
+#: matrix, so the matrix is exactly the twelve SRS rows and nothing else.
+NON_MATRIX_ROUTE_OPERATIONS: frozenset[str] = frozenset(
+    {
+        "HEALTH",
+        "AUTH_OTP",
+        "AUTH_VERIFY",
+        "AUTH_LOGOUT",
+        "ME",
+        "NOTIFICATION_LIST",
+        "NOTIFICATION_READ",
+        "PUSH_ENDPOINT_REGISTER",
+        "PUSH_ENDPOINT_DEACTIVATE",
+    }
+)
 
 _OPERATION_LIST: tuple[Operation, ...] = (
     _public_operation("HEALTH", "any caller; liveness only", SUBJECT_NONE),
@@ -106,63 +428,105 @@ _OPERATION_LIST: tuple[Operation, ...] = (
     ),
     _role_operation(
         "TASK_LIST", "every role; the service filters by visibility",
-        SUBJECT_TASK, ALL_ROLES,
+        SUBJECT_TASK, matrix_operations=("SEE_PROGRESS",),
     ),
     _role_operation(
         "TASK_VIEW", "every role; the service filters by visibility",
-        SUBJECT_TASK, ALL_ROLES,
+        SUBJECT_TASK, matrix_operations=("SEE_PROGRESS",),
     ),
     _role_operation(
         "TASK_CLAIM", "a Volunteer claims an open task in their vertical",
-        SUBJECT_TASK, VOLUNTEER_ROLES,
+        SUBJECT_TASK, matrix_operations=("CLAIM_TASK",),
     ),
     _role_operation(
-        "TASK_AGREEMENT", "a Volunteer answers their own assignment",
-        SUBJECT_TASK, VOLUNTEER_ROLES,
+        "TASK_AGREEMENT", "every role answers their own assignment",
+        SUBJECT_TASK, matrix_operations=("ASSIGNMENT_ACTION",),
     ),
     _role_operation(
-        "TASK_STATUS", "a Volunteer advances their own work status",
-        SUBJECT_TASK, VOLUNTEER_ROLES,
+        "TASK_STATUS", "every role advances their own work status",
+        SUBJECT_TASK, matrix_operations=("ASSIGNMENT_ACTION",),
     ),
     _role_operation(
-        "TASK_EDIT", "every role; the service checks task ownership",
-        SUBJECT_TASK, ALL_ROLES,
+        "TASK_EDIT", "Admin, or the task's creator/responsible Head/AH",
+        SUBJECT_TASK, matrix_operations=("MANAGE_TASK",),
     ),
     _role_operation(
-        "TASK_REASSIGN", "every role; the service checks task ownership",
-        SUBJECT_TASK, ALL_ROLES,
+        "TASK_REASSIGN", "Admin, or the task's creator/responsible Head/AH",
+        SUBJECT_TASK, matrix_operations=("MANAGE_TASK",),
     ),
     _role_operation(
-        "TASK_CANCEL", "every role; the service checks task ownership",
-        SUBJECT_TASK, ALL_ROLES,
+        "TASK_CANCEL", "Admin, or the task's creator/responsible Head/AH",
+        SUBJECT_TASK, matrix_operations=("MANAGE_TASK",),
     ),
     _role_operation(
         "PROPOSAL_VIEW", "the reviewer or an Admin; the service re-checks",
-        SUBJECT_PROPOSAL, REVIEW_ROLES,
+        SUBJECT_PROPOSAL, matrix_operations=("REVIEW_OWN_PROPOSAL",),
     ),
     _role_operation(
         "PROPOSAL_EDIT", "the reviewer or an Admin; the service re-checks",
-        SUBJECT_PROPOSAL, REVIEW_ROLES,
+        SUBJECT_PROPOSAL, matrix_operations=("DECIDE_PROPOSAL",),
     ),
     _role_operation(
-        "PROPOSAL_ACCEPT", "the reviewer or an Admin; the service re-checks",
-        SUBJECT_PROPOSAL, REVIEW_ROLES,
+        "PROPOSAL_ACCEPT",
+        "the reviewer or an Admin; the service re-checks scope and approval",
+        SUBJECT_PROPOSAL,
+        matrix_operations=(
+            "DECIDE_PROPOSAL",
+            "CREATE_TASK_OWN_VERTICAL",
+            "RAISE_CROSS_VERTICAL",
+            "PUSH_ANNOUNCEMENT",
+        ),
     ),
     _role_operation(
         "PROPOSAL_REJECT", "the reviewer or an Admin; the service re-checks",
-        SUBJECT_PROPOSAL, REVIEW_ROLES,
+        SUBJECT_PROPOSAL, matrix_operations=("DECIDE_PROPOSAL",),
     ),
     _role_operation(
         "APPROVAL_LIST", "an approval recipient (AH/Head) or an Admin",
-        SUBJECT_APPROVAL_REQUEST, REVIEW_ROLES,
+        SUBJECT_APPROVAL_REQUEST, matrix_operations=("DECIDE_CROSS_VERTICAL",),
     ),
     _role_operation(
         "APPROVAL_READ", "an approval recipient (AH/Head) or an Admin",
-        SUBJECT_APPROVAL_REQUEST, REVIEW_ROLES,
+        SUBJECT_APPROVAL_REQUEST, matrix_operations=("DECIDE_CROSS_VERTICAL",),
     ),
     _role_operation(
         "APPROVAL_DECIDE", "an approval recipient (AH/Head) or an Admin",
-        SUBJECT_APPROVAL_REQUEST, REVIEW_ROLES,
+        SUBJECT_APPROVAL_REQUEST, matrix_operations=("DECIDE_CROSS_VERTICAL",),
+    ),
+    _role_operation(
+        "DASHBOARD_VOLUNTEER",
+        "the Volunteer dashboard; Admin may read every dashboard",
+        SUBJECT_TASK,
+        frozenset({"Admin", "Volunteer"}),
+        matrix_operations=("SEE_PROGRESS",),
+    ),
+    _role_operation(
+        "DASHBOARD_AH",
+        "the AH dashboard; Admin may read every dashboard",
+        SUBJECT_TASK,
+        frozenset({"Admin", "AH"}),
+        matrix_operations=("SEE_PROGRESS",),
+    ),
+    _role_operation(
+        "DASHBOARD_HEAD",
+        "the Head dashboard; Admin may read every dashboard",
+        SUBJECT_TASK,
+        frozenset({"Admin", "Head"}),
+        matrix_operations=("SEE_PROGRESS",),
+    ),
+    _role_operation(
+        "DASHBOARD_ADMIN",
+        "the Admin dashboard (FR-UI-05)",
+        SUBJECT_ADMIN,
+        ADMIN_ROLES,
+        matrix_operations=("VIEW_INTERNALS",),
+    ),
+    _role_operation(
+        "ADMIN_BACKLOG",
+        "the Admin backlog reading (NFR-REL-06)",
+        SUBJECT_ADMIN,
+        ADMIN_ROLES,
+        matrix_operations=("VIEW_INTERNALS",),
     ),
     _role_operation(
         "NOTIFICATION_LIST", "any signed-in person; the service filters by owner",
@@ -182,19 +546,19 @@ _OPERATION_LIST: tuple[Operation, ...] = (
     ),
     _role_operation(
         "ADMIN_DENIALS", "an Admin reads the denial ledger",
-        SUBJECT_ADMIN, ADMIN_ROLES,
+        SUBJECT_ADMIN, matrix_operations=("VIEW_INTERNALS",),
     ),
     _role_operation(
         "ADMIN_ATTEMPTS", "an Admin reads the processing-attempt ledger",
-        SUBJECT_ADMIN, ADMIN_ROLES,
+        SUBJECT_ADMIN, matrix_operations=("VIEW_INTERNALS",),
     ),
     _role_operation(
         "ADMIN_CONFIG", "an Admin reads the redacted configuration names",
-        SUBJECT_ADMIN, ADMIN_ROLES,
+        SUBJECT_ADMIN, matrix_operations=("VIEW_INTERNALS",),
     ),
     _role_operation(
         "ADMIN_EVALUATION_EXPORT", "an Admin exports labelled review data",
-        SUBJECT_ADMIN, ADMIN_ROLES,
+        SUBJECT_ADMIN, matrix_operations=("VIEW_INTERNALS",),
     ),
 )
 
@@ -225,6 +589,11 @@ ROUTE_OPERATIONS: Mapping[tuple[str, str], str] = {
     ("GET", "/approvals"): "APPROVAL_LIST",
     ("GET", "/approvals/{request_id}"): "APPROVAL_READ",
     ("POST", "/approvals/{request_id}/decision"): "APPROVAL_DECIDE",
+    ("GET", "/dashboard/volunteer"): "DASHBOARD_VOLUNTEER",
+    ("GET", "/dashboard/ah"): "DASHBOARD_AH",
+    ("GET", "/dashboard/head"): "DASHBOARD_HEAD",
+    ("GET", "/dashboard/admin"): "DASHBOARD_ADMIN",
+    ("GET", "/admin/backlog"): "ADMIN_BACKLOG",
     ("GET", "/notifications"): "NOTIFICATION_LIST",
     ("POST", "/notifications/{notification_id}/read"): "NOTIFICATION_READ",
     ("POST", "/push-endpoints"): "PUSH_ENDPOINT_REGISTER",

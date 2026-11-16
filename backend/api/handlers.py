@@ -30,7 +30,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend import approvals, auth, notification_delivery, review
+from backend import approvals, auth, dashboards, notification_delivery, review, visibility
 from backend import tasks as task_service
 from backend.api import idempotency, read_models
 from backend.api.errors import ApiError
@@ -38,14 +38,19 @@ from backend.api.matrix import RouteAuthorizationError, authorize_route
 from backend.api.serializers import (
     accept_result_payload,
     approval_payload,
+    backlog_payload,
+    dashboard_admin_payload,
+    dashboard_ah_payload,
+    dashboard_head_payload,
+    dashboard_volunteer_payload,
     decision_payload,
     edit_result_payload,
     eval_proposal_payload,
     notification_payload,
-    person_payload,
     proposal_review_payload,
     push_endpoint_payload,
     reject_result_payload,
+    self_person_payload,
     session_payload,
     task_payload,
 )
@@ -502,10 +507,16 @@ def me(
     request: Request,
     person: PersonDep,
 ) -> dict[str, object]:
-    """The caller's own identity, always from the current roster row."""
+    """The caller's own identity, with their own contact details (NFR-SEC-03)."""
     with _request_state(request) as state:
         _authorize(state.connection, person, "ME")
-    return {"person": person_payload(person)}
+        record = visibility.person_record(state.connection, person.person_id)
+        fields = visibility.visible_fields(
+            state.connection, person, person.person_id
+        )
+    if record is None:  # pragma: no cover - authenticate read the same row
+        raise ApiError("UNAUTHENTICATED")
+    return {"person": self_person_payload(record, fields)}
 
 
 # ---------------------------------------------------------------------------
@@ -1012,6 +1023,63 @@ def deactivate_push_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# Dashboards (FR-UI-02..05, NFR-SEC-03, NFR-REL-06)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/dashboard/volunteer")
+def volunteer_dashboard(
+    request: Request,
+    person: PersonDep,
+) -> dict[str, object]:
+    """FR-UI-02: own tasks, claimable open tasks and own notifications."""
+    with _request_state(request) as state:
+        _authorize(state.connection, person, "DASHBOARD_VOLUNTEER")
+        view = dashboards.volunteer_dashboard(state.connection, actor=person)
+    return dashboard_volunteer_payload(view)
+
+
+@router.get("/dashboard/ah")
+def ah_dashboard(
+    request: Request,
+    person: PersonDep,
+) -> dict[str, object]:
+    """FR-UI-03: review queue, created tasks, direct reports, approvals."""
+    with _request_state(request) as state:
+        _authorize(state.connection, person, "DASHBOARD_AH")
+        view = dashboards.ah_dashboard(state.connection, actor=person)
+    return dashboard_ah_payload(view)
+
+
+@router.get("/dashboard/head")
+def head_dashboard(
+    request: Request,
+    person: PersonDep,
+) -> dict[str, object]:
+    """FR-UI-04: the vertical's tasks and people, plus affected cross-vertical work."""
+    with _request_state(request) as state:
+        _authorize(state.connection, person, "DASHBOARD_HEAD")
+        view = dashboards.head_dashboard(state.connection, actor=person)
+    return dashboard_head_payload(view)
+
+
+@router.get("/dashboard/admin")
+def admin_dashboard(
+    request: Request,
+    person: PersonDep,
+) -> dict[str, object]:
+    """FR-UI-05: backlog, attempts, denials, evaluation and config key names."""
+    with _request_state(request) as state:
+        _authorize(state.connection, person, "DASHBOARD_ADMIN")
+        view = dashboards.admin_dashboard(
+            state.connection,
+            actor=person,
+            config=request.app.state.config,
+        )
+    return dashboard_admin_payload(view)
+
+
+# ---------------------------------------------------------------------------
 # Admin read routes (FR-UI-05, NFR-REL-06)
 # ---------------------------------------------------------------------------
 
@@ -1044,6 +1112,18 @@ def admin_denials(
             state.connection, limit=page_limit, offset=offset
         )
     return {"denials": list(rows), "limit": page_limit, "offset": offset}
+
+
+@router.get("/admin/backlog")
+def admin_backlog(
+    request: Request,
+    person: PersonDep,
+) -> dict[str, object]:
+    """NFR-REL-06: unprocessed bucket count and the oldest bucket's age."""
+    with _request_state(request) as state:
+        _authorize(state.connection, person, "ADMIN_BACKLOG")
+        summary = dashboards.backlog_summary(state.connection)
+    return {"backlog": backlog_payload(summary)}
 
 
 @router.get("/admin/attempts")

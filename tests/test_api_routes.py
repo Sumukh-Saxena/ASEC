@@ -104,6 +104,11 @@ def test_route_table_is_exactly_the_classified_routes(
         "/admin/attempts": ("get",),
         "/admin/config": ("get",),
         "/admin/evaluation/export": ("get",),
+        "/admin/backlog": ("get",),
+        "/dashboard/volunteer": ("get",),
+        "/dashboard/ah": ("get",),
+        "/dashboard/head": ("get",),
+        "/dashboard/admin": ("get",),
     } == schema
 
 
@@ -214,7 +219,13 @@ def test_verify_issues_one_token_and_me_returns_the_current_roster_row(
 
     me = harness.me(token)
     assert me.status == 200
-    assert me.json() == {"person": payload["person"]}
+    # /me adds the caller's own name and contact details (NFR-SEC-03: self is
+    # always visible); /verify keeps the identity triple.
+    assert me.json()["person"] == {
+        **payload["person"],
+        "name": "Volunteer One",
+        "phone": "ph-4",
+    }
 
 
 def test_issued_token_is_stored_hashed_only(harness: ApiHarness) -> None:
@@ -325,7 +336,13 @@ def test_me_returns_the_current_role_and_verticals(harness: ApiHarness) -> None:
     response = harness.me(token)
     assert response.status == 200
     assert response.json() == {
-        "person": {"id": 4, "role": "Head", "vertical_ids": [1, 2]}
+        "person": {
+            "id": 4,
+            "name": "Volunteer One",
+            "role": "Head",
+            "vertical_ids": [1, 2],
+            "phone": "ph-4",
+        }
     }
 
 

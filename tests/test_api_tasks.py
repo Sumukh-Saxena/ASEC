@@ -300,7 +300,9 @@ def test_patch_by_a_non_owner_is_a_recorded_403(harness: ApiHarness) -> None:
     assert response.status == 403
     rows = _denials(harness.database, "TASK_EDIT")
     assert len(rows) == 1
-    assert rows[0]["reason"] == "NOT_TASK_OWNER"
+    # FR-AUT-04 row 6 gives Volunteer "—" for task management, so the route
+    # gate refuses the role before the service would examine ownership.
+    assert rows[0]["reason"] == "NOT_ROLE"
 
 
 def test_reassign_adds_an_assignee_with_the_expected_version(
@@ -333,7 +335,8 @@ def test_reassign_by_a_non_owner_is_a_recorded_403(harness: ApiHarness) -> None:
     )
 
     assert response.status == 403
-    assert _denials(harness.database, "TASK_REASSIGN")[0]["reason"] == "NOT_TASK_OWNER"
+    # FR-AUT-04 row 6: Volunteer has no task-management cell (AC-20).
+    assert _denials(harness.database, "TASK_REASSIGN")[0]["reason"] == "NOT_ROLE"
 
 
 def test_cancel_by_the_creator_marks_the_task_cancelled(
@@ -368,7 +371,8 @@ def test_cancel_by_a_non_owner_is_a_recorded_403(harness: ApiHarness) -> None:
     )
 
     assert response.status == 403
-    assert _denials(harness.database, "TASK_CANCEL")[0]["reason"] == "NOT_TASK_OWNER"
+    # FR-AUT-04 row 6: Volunteer has no task-management cell (AC-20).
+    assert _denials(harness.database, "TASK_CANCEL")[0]["reason"] == "NOT_ROLE"
 
 
 def test_identity_headers_never_change_a_task_actor(harness: ApiHarness) -> None:

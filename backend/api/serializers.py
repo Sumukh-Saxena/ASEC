@@ -14,6 +14,17 @@ from __future__ import annotations
 
 from backend.approvals import ApprovalView, DecisionResult
 from backend.auth import AuthenticatedPerson, Session
+from backend.dashboards import (
+    AdminDashboard,
+    AHDashboard,
+    AssigneeView,
+    BacklogSummary,
+    HeadDashboard,
+    ReviewQueueItem,
+    TaskProgressView,
+    VisiblePerson,
+    VolunteerDashboard,
+)
 from backend.notification_delivery import NotificationView
 from backend.review import (
     AcceptResult,
@@ -27,6 +38,7 @@ from backend.review import (
     ReviewMessage,
 )
 from backend.tasks import TaskSummary
+from backend.visibility import PersonRecord
 
 
 def person_payload(person: AuthenticatedPerson) -> dict[str, object]:
@@ -276,4 +288,156 @@ def eval_proposal_payload(item: EvalProposal) -> dict[str, object]:
             }
             for delta in item.generated_final_delta
         ],
+    }
+
+# ---------------------------------------------------------------------------
+# W6: hierarchy-visible people and role dashboards
+# ---------------------------------------------------------------------------
+
+
+def visible_person_payload(
+    person: PersonRecord, fields: frozenset[str]
+) -> dict[str, object]:
+    """One person projection containing exactly the permitted fields.
+
+    A field the caller may not see is absent, not ``null`` (NFR-SEC-03): the
+    allow-list is the serializer's, and it never widens it.
+    """
+    payload: dict[str, object] = {}
+    if "id" in fields:
+        payload["id"] = person.person_id
+    if "name" in fields:
+        payload["name"] = person.name
+    if "role" in fields:
+        payload["role"] = person.role
+    if "vertical_ids" in fields:
+        payload["vertical_ids"] = list(person.vertical_ids)
+    if "phone" in fields:
+        payload["phone"] = person.phone
+    return payload
+
+
+def self_person_payload(
+    person: PersonRecord, fields: frozenset[str]
+) -> dict[str, object]:
+    """The caller's own identity for ``GET /me`` (self is always visible)."""
+    return visible_person_payload(person, fields)
+
+
+def _assignee_view_payload(view: AssigneeView) -> dict[str, object]:
+    return {
+        "person": visible_person_payload(view.person, view.fields),
+        "agreement": view.agreement,
+        "work_status": view.work_status,
+        "cancelled": view.cancelled,
+    }
+
+
+def task_progress_payload(view: TaskProgressView) -> dict[str, object]:
+    """One task plus its per-assignee progress (FR-TSK-07)."""
+    return {
+        "task": task_payload(view.task),
+        "assignees": [
+            _assignee_view_payload(assignee) for assignee in view.assignees
+        ],
+    }
+
+
+def _review_queue_payload(item: ReviewQueueItem) -> dict[str, object]:
+    """One pending proposal in the reviewer's queue; no message content."""
+    return {
+        "proposal_id": item.proposal_id,
+        "ptype": item.ptype,
+        "description": item.description,
+        "source_vertical_id": item.source_vertical_id,
+        "generated_at": item.generated_at,
+    }
+
+
+def _visible_people_payload(
+    people: tuple[VisiblePerson, ...],
+) -> list[dict[str, object]]:
+    return [
+        visible_person_payload(person.person, person.fields) for person in people
+    ]
+
+
+def dashboard_volunteer_payload(view: VolunteerDashboard) -> dict[str, object]:
+    """FR-UI-02: own tasks, claimable open tasks, own notifications."""
+    return {
+        "tasks": [task_payload(task) for task in view.tasks],
+        "open_tasks": [task_payload(task) for task in view.open_tasks],
+        "notifications": [
+            notification_payload(item) for item in view.notifications
+        ],
+    }
+
+
+def dashboard_ah_payload(view: AHDashboard) -> dict[str, object]:
+    """FR-UI-03: review queue, created tasks with progress, people, approvals."""
+    return {
+        "review_queue": [
+            _review_queue_payload(item) for item in view.review_queue
+        ],
+        "created_tasks": [
+            task_progress_payload(item) for item in view.created_tasks
+        ],
+        "volunteers": _visible_people_payload(view.volunteers),
+        "approvals": [approval_payload(item) for item in view.approvals],
+    }
+
+
+def dashboard_head_payload(view: HeadDashboard) -> dict[str, object]:
+    """FR-UI-04: the vertical's tasks/people plus affected cross-vertical work."""
+    return {
+        "review_queue": [
+            _review_queue_payload(item) for item in view.review_queue
+        ],
+        "tasks": [task_progress_payload(item) for item in view.tasks],
+        "people": _visible_people_payload(view.people),
+        "approvals": [approval_payload(item) for item in view.approvals],
+        "cross_vertical_tasks": [
+            task_payload(task) for task in view.cross_vertical_tasks
+        ],
+    }
+
+
+def backlog_payload(summary: BacklogSummary) -> dict[str, object]:
+    """NFR-REL-06: unprocessed count, oldest age and the per-group reading."""
+    return {
+        "unprocessed_buckets": summary.unprocessed_buckets,
+        "unassigned_messages": summary.unassigned_messages,
+        "oldest_age_seconds": summary.oldest_age_seconds,
+        "groups": [
+            {
+                "group_id": group.group_id,
+                "unprocessed_buckets": group.unprocessed_buckets,
+                "unassigned_messages": group.unassigned_messages,
+                "buckets_by_state": dict(group.buckets_by_state),
+                "oldest_unprocessed_bucket_id": (
+                    group.oldest_unprocessed_bucket_id
+                ),
+                "oldest_unprocessed_anchor": group.oldest_unprocessed_anchor,
+                "progress_to": group.progress_to,
+                "age_event_seconds": group.age_event_seconds,
+            }
+            for group in summary.groups
+        ],
+    }
+
+
+def dashboard_admin_payload(view: AdminDashboard) -> dict[str, object]:
+    """FR-UI-05: backlog, attempt/denial counts, evaluation, config key names."""
+    return {
+        "backlog": backlog_payload(view.backlog),
+        "attempts": {
+            "total": view.attempts_total,
+            "by_outcome": dict(view.attempts_by_outcome),
+        },
+        "denials": {"total": view.denials_total},
+        "evaluation": {
+            "available": True,
+            "labelled_proposals": view.evaluation_labelled,
+        },
+        "config": {"keys": list(view.config_keys)},
     }

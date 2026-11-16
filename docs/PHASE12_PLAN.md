@@ -395,6 +395,46 @@ migration `0025_idempotency.sql` and `backend/api/idempotency.py`.
 
 ---
 
+#### 4.8 Matrix cells and visibility as built (Session C)
+
+Marked block added in Phase 12 Session C; it records what W5/W6 actually built
+and where the SRS matrix still needs an owner reading.
+
+- The 48-cell `FR_AUT_OPERATIONS` table in `backend/api/matrix.py` is the
+  single source of truth: every domain route's role set is derived from its
+  row(s) via `Operation.matrix_operations`, and `ROUTE_OPERATIONS` maps each
+  registered route to one operation. `tests/test_api_route_coverage.py` fails
+  when a route lacks a row; `tests/test_api_authorization_matrix.py` exercises
+  all 48 cells through the real routes plus completeness and vocabulary tests.
+- Rows 2/3/4/10 share proposal acceptance, so the route takes their union;
+  rows 5 and 11 are shared by the approval reads and the Admin reads. Task
+  edit/reassign/cancel derive from row 6, which excludes Volunteer at the
+  route gate (a Volunteer denial is `NOT_ROLE`, before the service's finer
+  ownership reason).
+- Row 8 (view processing records) gives Admin OVERRIDE and the other roles
+  "—"; row 5 (approve/deny cross-vertical) gives Admin YES. Row 3's "own
+  vertical" is implemented as the Phase 6 reviewer-owns-the-proposal rule; the
+  SRS wording stays ambiguous for an AH reviewing another vertical's proposal.
+- `PUSH_ANNOUNCEMENT` has no route of its own (plan §4.4); its Admin cell is
+  marked `needs_owner=True` because row 2's proposal-accept override makes
+  Admin acceptance reachable although the SRS writes "—" there.
+- W6 adds only `GET /dashboard/volunteer`, `/ah`, `/head`, `/admin` and
+  `GET /admin/backlog`. The three role dashboards read row 9's SEE_PROGRESS
+  half and are restricted to their own role plus Admin's override; the two
+  Admin routes read row 11's VIEW_INTERNALS half.
+- Hierarchy visibility lives in `backend/visibility.py`: Admin everyone, Head
+  own vertical(s), AH direct volunteer reports, Volunteer self. A person the
+  caller cannot contact contributes base fields without `phone` when they
+  appear in an otherwise readable task payload; the phone is absent, never
+  `null`. Exception (a) is the creator/assignee task check; (b) and (c) remain
+  the review and approval payloads. `GET /me` returns the caller's own name
+  and phone.
+- Dashboards are read-only compositions of `visible_tasks`, `task_progress`,
+  the review queue, pending approvals, notifications and `pipeline_backlog`;
+  they are unpaginated, a limit recorded in `docs/KNOWN_GAPS.md`.
+
+---
+
 ## 5. Exact migration SQL (planned, full file)
 
 ### `0024_auth_sessions.sql` (FR-ROS-03, FR-AUT-01)

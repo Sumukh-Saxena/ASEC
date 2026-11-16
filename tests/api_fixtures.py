@@ -41,6 +41,13 @@ UNKNOWN_ROLL = "R-NOBODY"
 
 VOLUNTEER_DISCORD = "100000000000000004"
 
+#: The second vertical's people, added by :func:`seed_team` on top of the
+#: fixed roster (W5/W6 tests only; ``seed_database`` is unchanged).
+HEAD2_ROLL = "R-HEAD2"
+AH2_ROLL = "R-AH2"
+VOL3_ROLL = "R-VOL3"
+VOL4_ROLL = "R-VOL4"
+
 #: A roll number that never exists in the fixture roster.
 NOBODY = UNKNOWN_ROLL
 
@@ -271,6 +278,101 @@ def _add_person(
     connection.execute(
         "INSERT INTO person_vertical (person_id, vertical_id) VALUES (?, ?)",
         (person_id, vertical_id),
+    )
+
+
+def add_person(
+    database: Path,
+    *,
+    person_id: int,
+    name: str,
+    role: str,
+    roll_number: str,
+    discord_id: str | None,
+    vertical_id: int,
+    reports_to: int | None = None,
+    active: int = 1,
+    phone: str | None = None,
+) -> None:
+    """Add one extra roster person to an already-seeded fixture database.
+
+    ``seed_database`` stays the small fixed roster the earlier tests rely on;
+    the matrix and visibility tests need a second vertical's people without
+    changing those existing counts. Values are synthetic.
+    """
+    connection = _connection(database)
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO person"
+                " (id, name, discord_user_id, phone, role, reports_to, active,"
+                " roll_number)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    person_id,
+                    name,
+                    discord_id,
+                    f"ph-{person_id}" if phone is None else phone,
+                    role,
+                    reports_to,
+                    active,
+                    roll_number,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO person_vertical (person_id, vertical_id) VALUES (?, ?)",
+                (person_id, vertical_id),
+            )
+    finally:
+        connection.close()
+
+
+def seed_team(database: Path) -> None:
+    """Add a second vertical's Head and the AH/volunteer hierarchy below it.
+
+    Ids 8-11, all synthetic: Head Two (vertical 2), AH Two (vertical 1, reports
+    to Head One), Volunteer Three (vertical 2, reports to Head Two) and
+    Volunteer Four (vertical 1, reports to AH Two). ``seed_database`` and
+    therefore every earlier count stay untouched.
+    """
+    add_person(
+        database,
+        person_id=8,
+        name="Head Two",
+        role="Head",
+        roll_number=HEAD2_ROLL,
+        discord_id="100000000000000008",
+        vertical_id=2,
+    )
+    add_person(
+        database,
+        person_id=9,
+        name="AH Two",
+        role="AH",
+        roll_number=AH2_ROLL,
+        discord_id="100000000000000009",
+        vertical_id=1,
+        reports_to=2,
+    )
+    add_person(
+        database,
+        person_id=10,
+        name="Volunteer Three",
+        role="Volunteer",
+        roll_number=VOL3_ROLL,
+        discord_id="100000000000000010",
+        vertical_id=2,
+        reports_to=8,
+    )
+    add_person(
+        database,
+        person_id=11,
+        name="Volunteer Four",
+        role="Volunteer",
+        roll_number=VOL4_ROLL,
+        discord_id="100000000000000011",
+        vertical_id=1,
+        reports_to=9,
     )
 
 
