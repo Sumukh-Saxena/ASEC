@@ -276,8 +276,7 @@ FR_AUT_OPERATIONS: tuple[MatrixOperation, ...] = (
         cells=_cells(
             Cell(
                 CellKind.NO,
-                "— (reachable through row 2's proposal-accept override)",
-                needs_owner=True,
+                "—",
             ),
             Cell(CellKind.SCOPE, "To own vertical"),
             Cell(CellKind.SCOPE, "To volunteers under them"),
@@ -286,11 +285,11 @@ FR_AUT_OPERATIONS: tuple[MatrixOperation, ...] = (
         route_operations=("PROPOSAL_ACCEPT",),
         note=(
             "There is no separate broadcast route; accepting the announcement"
-            " is the operation. NEEDS-OWNER: Admin's '—' cannot be enforced"
-            " without a broadcast-specific rule, because accepting an"
-            " announcement is accepting a proposal and row 2 gives Admin"
-            " Override there. The cell is recorded, and the test asserts the"
-            " implemented behaviour instead of inventing a denial."
+            " is the operation. Owner decision A (Phase 12 D1): the SRS '—'"
+            " stands for Admin, so"
+            " :func:`authorize_proposal_acceptance` refuses an Admin's attempt"
+            " to accept an ANNOUNCEMENT proposal and records the denial against"
+            " this operation. All other Admin overrides are unchanged."
         ),
     ),
     MatrixOperation(
@@ -411,6 +410,9 @@ NON_MATRIX_ROUTE_OPERATIONS: frozenset[str] = frozenset(
         "NOTIFICATION_READ",
         "PUSH_ENDPOINT_REGISTER",
         "PUSH_ENDPOINT_DEACTIVATE",
+        "ADMIN_SYSTEM",
+        "ADMIN_SYSTEM_PAUSE",
+        "ADMIN_SYSTEM_RESUME",
     }
 )
 
@@ -560,6 +562,18 @@ _OPERATION_LIST: tuple[Operation, ...] = (
         "ADMIN_EVALUATION_EXPORT", "an Admin exports labelled review data",
         SUBJECT_ADMIN, matrix_operations=("VIEW_INTERNALS",),
     ),
+    _role_operation(
+        "ADMIN_SYSTEM", "an Admin reads the two operator switches (owner D2)",
+        SUBJECT_ADMIN, ADMIN_ROLES,
+    ),
+    _role_operation(
+        "ADMIN_SYSTEM_PAUSE", "an Admin pauses processing or delivery (owner D2)",
+        SUBJECT_ADMIN, ADMIN_ROLES,
+    ),
+    _role_operation(
+        "ADMIN_SYSTEM_RESUME", "an Admin resumes processing or delivery (owner D2)",
+        SUBJECT_ADMIN, ADMIN_ROLES,
+    ),
 )
 
 OPERATIONS: Mapping[str, Operation] = {
@@ -602,7 +616,48 @@ ROUTE_OPERATIONS: Mapping[tuple[str, str], str] = {
     ("GET", "/admin/attempts"): "ADMIN_ATTEMPTS",
     ("GET", "/admin/config"): "ADMIN_CONFIG",
     ("GET", "/admin/evaluation/export"): "ADMIN_EVALUATION_EXPORT",
+    ("GET", "/admin/system"): "ADMIN_SYSTEM",
+    ("POST", "/admin/system/pause"): "ADMIN_SYSTEM_PAUSE",
+    ("POST", "/admin/system/resume"): "ADMIN_SYSTEM_RESUME",
 }
+
+
+def authorize_proposal_acceptance(
+    connection: sqlite3.Connection,
+    *,
+    person_id: int,
+    proposal_id: int,
+) -> None:
+    """Apply PUSH_ANNOUNCEMENT's strict Admin cell to an announcement accept.
+
+    FR-AUT-04 gives Admin "—" on PUSH_ANNOUNCEMENT (owner decision A). The only
+    surface for an announcement is ``POST /proposals/{id}/accept``, which is
+    also the row-2 decision route where Admin has Override. This check runs
+    after :func:`authorize_route` on the same connection: when the proposal is
+    an announcement and the caller's *current* roster role is Admin, it records
+    the denial against ``PUSH_ANNOUNCEMENT`` and raises. Every other caller and
+    every other proposal type is left to the route table and the review
+    service's own reviewer rule.
+    """
+    row = connection.execute(
+        "SELECT ptype FROM proposal WHERE id = ?", (proposal_id,)
+    ).fetchone()
+    if row is None or str(row["ptype"]) != "ANNOUNCEMENT":
+        return
+    person = connection.execute(
+        "SELECT role FROM person WHERE id = ?", (person_id,)
+    ).fetchone()
+    if person is None or str(person["role"]).strip() != "Admin":
+        return
+    record_denial(
+        connection,
+        actor_person_id=person_id,
+        operation="PUSH_ANNOUNCEMENT",
+        subject_type=SUBJECT_PROPOSAL,
+        subject_id=proposal_id,
+        reason=REASON_NOT_ROLE,
+    )
+    raise RouteAuthorizationError(REASON_NOT_ROLE)
 
 
 def authorize_route(

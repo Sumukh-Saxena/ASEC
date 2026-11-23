@@ -60,6 +60,7 @@ from backend.ingest import ingest_message
 from backend.orchestration import run_bucketing_pass
 from backend.proposals import ProposalGenerator, run_proposal_pass
 from backend.relevance import RelevanceClassifier, run_relevance_pass
+from backend.system_control import is_delivery_paused, is_processing_paused
 
 logger = logging.getLogger("asec.worker")
 
@@ -161,6 +162,16 @@ def run_pipeline_tick(
         raise ValueError(
             "poll_safety_margin_seconds must be non-negative,"
             f" got {poll_safety_margin_seconds!r}"
+        )
+    if is_processing_paused(connection):
+        # Owner decision C: a processing pause stops this tick before any clock
+        # write or bucket formation. Ingestion already happened in the caller.
+        return TickResult(
+            groups=(),
+            assigned=0,
+            skipped=0,
+            relevance=None,
+            proposals=None,
         )
     if poll_instants is None:
         groups = tuple(
@@ -385,7 +396,7 @@ def run_live_tick(
         poll_instants=poll_instants,
         poll_safety_margin_seconds=poll_safety_margin_seconds,
     )
-    if delivery_tick is not None:
+    if delivery_tick is not None and not is_delivery_paused(connection):
         try:
             delivery_tick()
         except Exception as error:  # noqa: BLE001 - delivery must not fail

@@ -46,6 +46,7 @@ from backend.discord_adapter import (
     check_live_readiness,
     check_live_start,
 )
+from backend.export import ExportError, export_database
 from backend.group_import import GroupImportError, import_groups_from_file
 from backend.ingest import ingest_message
 from backend.logging_setup import setup_logging
@@ -76,6 +77,11 @@ _IMPORT_GROUPS_USAGE = (
 
 _SERVE_API_USAGE = (
     "usage: python -m backend serve-api [--host <host>] [--port <port>]"
+)
+
+_EXPORT_USAGE = (
+    "usage: python -m backend export --db <database path>"
+    " --destination <directory> [--unmasked]"
 )
 
 #: Only these literals are treated as loopback; anything else needs the
@@ -542,6 +548,60 @@ def _run_serve_api(
     return 0
 
 
+def _parse_export_args(args: Sequence[str]) -> tuple[str, str, bool] | None:
+    database: str | None = None
+    destination: str | None = None
+    masked = True
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if option in ("--db", "--destination"):
+            if index + 1 >= len(args):
+                return None
+            value = args[index + 1].strip()
+            if value == "":
+                return None
+            if option == "--db":
+                database = value
+            else:
+                destination = value
+            index += 2
+            continue
+        if option == "--unmasked":
+            masked = False
+            index += 1
+            continue
+        return None
+    if database is None or destination is None:
+        return None
+    return database, destination, masked
+
+
+def _run_export(args: Sequence[str], *, now: str) -> int:
+    parsed = _parse_export_args(args)
+    if parsed is None:
+        print(_EXPORT_USAGE, file=sys.stderr)
+        return 2
+    database, destination, masked = parsed
+    try:
+        result = export_database(
+            database,
+            destination=Path(destination),
+            masked=masked,
+            exported_at=now,
+        )
+    except (ExportError, OSError, sqlite3.Error) as error:
+        print(f"export failed: {error}", file=sys.stderr)
+        return 1
+    print(
+        f"masked={result.masked} exported_at={result.exported_at}"
+        f" destination={result.destination}"
+    )
+    for name, count in result.datasets:
+        print(f"{name}: {count}")
+    return 0
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -579,9 +639,13 @@ def main(
             config=load_config() if config is None else config,
             serve=_serve_with_uvicorn if serve_api is None else serve_api,
         )
+    if args and args[0] == "export":
+        return _run_export(
+            args[1:], now=(_utc_now if now is None else now)()
+        )
     print(
         "ASEC backend (Phase 0). Use --version, 'discord-smoke', 'run-live',"
-        " 'import-groups' or 'serve-api'.",
+        " 'import-groups', 'serve-api' or 'export'.",
         file=sys.stderr,
     )
     return 2

@@ -7,7 +7,10 @@ includes a token except in the one verify response that issues it.
 W3 adds the task and proposal-review payloads. Message content appears in
 exactly one serializer (:func:`proposal_review_payload`), which is the Phase 6
 reviewer view NFR-SEC-03 exception (b) allows; every other payload is built
-from columns, never from source text. No payload includes a phone number.
+from columns, never from source text. A person's phone number appears only in
+the payloads whose caller passes :func:`backend.visibility.visible_fields` for
+that person (including ``GET /me`` for the caller's own record) and is absent,
+never ``null``, otherwise.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from backend.review import (
     RejectResult,
     ReviewMessage,
 )
+from backend.system_control import SystemState
 from backend.tasks import TaskSummary
 from backend.visibility import PersonRecord
 
@@ -370,6 +374,9 @@ def dashboard_volunteer_payload(view: VolunteerDashboard) -> dict[str, object]:
         "notifications": [
             notification_payload(item) for item in view.notifications
         ],
+        "counts": dict(view.counts),
+        "attention": dict(view.attention),
+        "has_more": dict(view.has_more),
     }
 
 
@@ -384,6 +391,9 @@ def dashboard_ah_payload(view: AHDashboard) -> dict[str, object]:
         ],
         "volunteers": _visible_people_payload(view.volunteers),
         "approvals": [approval_payload(item) for item in view.approvals],
+        "counts": dict(view.counts),
+        "attention": dict(view.attention),
+        "has_more": dict(view.has_more),
     }
 
 
@@ -399,6 +409,9 @@ def dashboard_head_payload(view: HeadDashboard) -> dict[str, object]:
         "cross_vertical_tasks": [
             task_payload(task) for task in view.cross_vertical_tasks
         ],
+        "counts": dict(view.counts),
+        "attention": dict(view.attention),
+        "has_more": dict(view.has_more),
     }
 
 
@@ -427,17 +440,57 @@ def backlog_payload(summary: BacklogSummary) -> dict[str, object]:
 
 
 def dashboard_admin_payload(view: AdminDashboard) -> dict[str, object]:
-    """FR-UI-05: backlog, attempt/denial counts, evaluation, config key names."""
+    """FR-UI-05 festival counts and the backlog, with the stop/resume flags."""
     return {
-        "backlog": backlog_payload(view.backlog),
-        "attempts": {
-            "total": view.attempts_total,
-            "by_outcome": dict(view.attempts_by_outcome),
+        "messages": {
+            "total": view.messages_total,
+            "last_24h": view.messages_last_24h,
         },
-        "denials": {"total": view.denials_total},
-        "evaluation": {
-            "available": True,
-            "labelled_proposals": view.evaluation_labelled,
+        "buckets": dict(view.buckets_by_state),
+        "relevance": {
+            "relevant": view.relevance_relevant,
+            "irrelevant": view.relevance_irrelevant,
+            "failed": view.relevance_failed,
+            "unclassified": view.relevance_unclassified,
         },
-        "config": {"keys": list(view.config_keys)},
+        "proposals": {
+            "pending_review": view.proposals_pending_review,
+            "accepted": view.proposals_accepted,
+            "rejected": view.proposals_rejected,
+        },
+        "tasks": {
+            "total": view.tasks_total,
+            "by_status": dict(view.tasks_by_status),
+            "by_vertical": [
+                {
+                    "vertical_id": counts.vertical_id,
+                    "total": counts.total,
+                    "by_status": dict(counts.by_status),
+                }
+                for counts in view.tasks_by_vertical
+            ],
+        },
+        "notifications": {
+            "pending": view.notifications_pending,
+            "delivered": view.notifications_delivered,
+            "retrying": view.notifications_retrying,
+            "exhausted": view.notifications_exhausted,
+            "no_endpoint": view.notifications_no_endpoint,
+        },
+        "backlog": {
+            "unprocessed_buckets": view.backlog_unprocessed_buckets,
+            "oldest_age_seconds": view.backlog_oldest_age_seconds,
+        },
+        "system": {
+            "processing_paused": view.processing_paused,
+            "delivery_paused": view.delivery_paused,
+        },
+    }
+
+
+def system_payload(state: SystemState) -> dict[str, object]:
+    """The two operator switches as two booleans (owner decision C)."""
+    return {
+        "processing_paused": state.processing_paused,
+        "delivery_paused": state.delivery_paused,
     }

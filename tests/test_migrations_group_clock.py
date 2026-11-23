@@ -54,7 +54,7 @@ def _clock(
 
 
 def test_migration_0020_applies_and_reapplies(conn: sqlite3.Connection) -> None:
-    assert _versions(conn) == list(range(1, 26))
+    assert _versions(conn) == list(range(1, 27))
     assert apply_migrations(conn) == []
 
 

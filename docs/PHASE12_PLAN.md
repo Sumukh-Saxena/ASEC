@@ -288,7 +288,7 @@ Auth: `POST /auth/otp`, `POST /auth/verify`, `POST /auth/logout`, `GET /me`.
 | Approvals | `GET /approvals`, `GET /approvals/{id}`, `POST /approvals/{id}/decision` | `approvals.py` |
 | Notifications | `GET /notifications`, `POST /notifications/{id}/read`, `POST /push-endpoints`, `DELETE /push-endpoints/{id}` | `notification_delivery.py` |
 | Dashboards | `GET /dashboard/volunteer`, `/ah`, `/head`, `/admin` | read models below |
-| Admin | `GET /admin/backlog`, `GET /admin/attempts`, `GET /admin/denials`, `GET /admin/evaluation/export`, `GET /admin/config` | `orchestration.py`, `review.py`, `evaluation.py` |
+| Admin | `GET /admin/backlog`, `GET /admin/attempts`, `GET /admin/denials`, `GET /admin/evaluation/export`, `GET /admin/config`, `GET /admin/system`, `POST /admin/system/pause`, `POST /admin/system/resume` | `orchestration.py`, `review.py`, `evaluation.py`, `system_control.py` |
 
 - `PATCH /tasks/{id}` carries `expected_version`; a stale value returns 409 with the
   current task snapshot (FR-TSK-12/AC-19).
@@ -415,9 +415,10 @@ and where the SRS matrix still needs an owner reading.
   "—"; row 5 (approve/deny cross-vertical) gives Admin YES. Row 3's "own
   vertical" is implemented as the Phase 6 reviewer-owns-the-proposal rule; the
   SRS wording stays ambiguous for an AH reviewing another vertical's proposal.
-- `PUSH_ANNOUNCEMENT` has no route of its own (plan §4.4); its Admin cell is
-  marked `needs_owner=True` because row 2's proposal-accept override makes
-  Admin acceptance reachable although the SRS writes "—" there.
+- `PUSH_ANNOUNCEMENT` has no route of its own (plan §4.4); its Admin cell was
+  marked `needs_owner=True` in Session C because row 2's proposal-accept
+  override makes Admin acceptance reachable although the SRS writes "—" there.
+  Session D owner decision A resolves it strictly; see §4.9.
 - W6 adds only `GET /dashboard/volunteer`, `/ah`, `/head`, `/admin` and
   `GET /admin/backlog`. The three role dashboards read row 9's SEE_PROGRESS
   half and are restricted to their own role plus Admin's override; the two
@@ -432,6 +433,89 @@ and where the SRS matrix still needs an owner reading.
 - Dashboards are read-only compositions of `visible_tasks`, `task_progress`,
   the review queue, pending approvals, notifications and `pipeline_backlog`;
   they are unpaginated, a limit recorded in `docs/KNOWN_GAPS.md`.
+
+---
+
+#### 4.9 Owner decisions for Session D (binding, 2026-11-17)
+
+Marked block added in Phase 12 Session D. These are the owner's decisions for
+the last workstreams (D1-D4); where a decision and the SRS wording differ, the
+decision records the approved reading and the implementation follows it.
+
+- **A — announcements are strict.** Admin's `PUSH_ANNOUNCEMENT` cell stays "—".
+  The matrix remains one table in `backend/api/matrix.py`; all other Admin
+  overrides are unchanged. Because accepting an `ANNOUNCEMENT` proposal is the
+  only announcement surface, `authorize_proposal_acceptance` re-reads the
+  current role and the proposal type, records a denial against
+  `PUSH_ANNOUNCEMENT` with reason `NOT_ROLE`, and refuses before the service.
+- **B — the Admin view is small.** It shows stop/resume, export to the
+  operator's PC and festival-at-a-glance counts only. The attempt, denial,
+  evaluation and config blocks leave `GET /dashboard/admin`; their separate
+  Admin routes remain.
+- **C — two independent switches.** `PROCESSING` and `DELIVERY` pause
+  independently. Ingestion always continues; a pause stops the worker's next
+  processing tick or its next delivery pass, never message capture.
+- **D — exports cover everything.** Reviews, tasks, approvals, processing
+  records and notifications export to local files, masked by default under
+  NFR-SEC-04 with `backend.masking.mask_pii`.
+- **E — role dashboards stay uncluttered.** Volunteer, AH and Head dashboards
+  keep the minimum useful rows; counts appear as badges, not extra lists.
+
+---
+
+#### 4.10 Exports as built (Session D3)
+
+Marked block added in Phase 12 Session D. It records what owner decision D
+became in `backend/export.py` and the `export` CLI.
+
+- One JSON Lines file per dataset plus `manifest.json` (`format`,
+  `masked`, `exported_at`, per-dataset counts). The manifest holds counts and
+  flags only.
+- The exported datasets are the domain records: verticals, persons and their
+  verticals, source groups/clocks/progress, source messages, mentions,
+  reactions, buckets and their messages, processing attempts, relevance inputs
+  and decisions, proposal inputs/proposals/assignees/attributes/affected
+  verticals/context/revisions/decisions, tasks and their assignees/
+  attributes/affected verticals/history, approval requests/recipients/
+  decisions, announcements, notifications/attempts/reads, authorization
+  denials, latency measurements, replay batches, evaluation runs and case
+  results, and the two system controls.
+- Never exported, masked or not: the auth stores (`auth_attempt`,
+  `auth_session`, `otp_challenge`, `idempotency_key`), push endpoints (tokens),
+  and `person.roll_number` (the login credential).
+- Masked by default: every string value passes through
+  `backend.masking.mask_pii`, so phone, email, roll-number and government-ID
+  shapes become their placeholders. `--unmasked` keeps the text but still
+  excludes the credential columns and tables above.
+- The source database is opened read-only (`mode=ro`); the export writes no
+  row. SQLite may create its `-wal`/`-shm` sidecars next to a WAL database when
+  it opens it. The destination directory must be absent or empty, so an
+  operator file is never overwritten. The CLI prints counts and the mask flag
+  only, never record content.
+
+---
+
+#### 4.11 Role dashboards as built (Session D4)
+
+Marked block added in Phase 12 Session D. It records owner decision E in the
+Volunteer, AH and Head payloads; the Admin view is unchanged from §4.9.
+
+- Each dashboard keeps its existing lists as lists and adds two count-only
+  objects and one flag map: `counts` (the true size of every list, even when the
+  list is capped), `attention` (the subset that needs the caller to act) and
+  `has_more` (one boolean per list, in payload order).
+- `counts` keys are exactly the list names. `attention` keys are
+  `unread_notifications` / `open_tasks` / `active_tasks` for Volunteer,
+  `pending_review` / `approvals` / `active_created_tasks` for AH and
+  `pending_review` / `approvals` / `active_tasks` for Head. "Active" is the
+  existing reading of live accepted assignments: a task with no accepted,
+  non-cancelled assignee, or one whose accepted assignees are not all
+  `COMPLETED`, still needs work.
+- Every list is capped at `API_DASHBOARD_LIST_LIMIT` (default 50, valid 1–200,
+  `ApiReadSettings.dashboard_list_limit`). A service called with a non-positive
+  limit raises `ValueError`; the handlers always pass the configured value.
+  Counts and flags are computed before capping, so a badge never reports the
+  capped size.
 
 ---
 
@@ -521,6 +605,7 @@ expired sessions and consumed challenges stay as evidence (NFR-AUD-03).
 | FR-UI-05 | admin backlog/attempts/config payloads | dashboard tests |
 | FR-UI-02/03/04 (data half only; requirement is OUT OF REPO) | dashboard payloads consumed by the app | dashboard tests |
 | NFR-REL-06 | admin backlog count/age | backlog test |
+| NFR-SEC-04, EIR-03 (owner decision D exports) | `backend/export.py` masks every string by default through `mask_pii`; the auth stores, push tokens and `person.roll_number` are never exported | `tests/test_export.py` |
 | EIR-02/05 | app↔backend only; same rules every interface | architecture test |
 
 Out of repo: FR-UI-01/06/07 and the rendering halves of FR-UI-02/03/04; mobile app and TLS

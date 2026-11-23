@@ -11,9 +11,11 @@ import pytest
 from backend.config import (
     DEFAULT_PROPOSAL_MAX_CANDIDATES_PER_CALL,
     DEFAULT_RELEVANCE_MAX_MESSAGES_PER_CALL,
+    Config,
     ConfigError,
     PartSettings,
     is_secret_key,
+    load_api_read_settings,
     load_config,
     load_part_settings,
 )
@@ -144,6 +146,21 @@ def test_invalid_part_settings_fail_loudly(value: str) -> None:
     config = load_config({"RELEVANCE_MAX_MESSAGES_PER_CALL": value})
     with pytest.raises(ConfigError):
         load_part_settings(config)
+
+
+def test_api_dashboard_list_limit_defaults_to_fifty() -> None:
+    """Owner decision E: one configuration cap for the dashboard lists."""
+    settings = load_api_read_settings(Config({}))
+    assert settings.dashboard_list_limit == 50
+
+
+def test_api_dashboard_list_limit_reads_configuration_and_rejects_zero() -> None:
+    settings = load_api_read_settings(
+        Config({"API_DASHBOARD_LIST_LIMIT": "5"})
+    )
+    assert settings.dashboard_list_limit == 5
+    with pytest.raises(ConfigError):
+        load_api_read_settings(Config({"API_DASHBOARD_LIST_LIMIT": "0"}))
 
 
 def test_production_database_path_is_documented() -> None:

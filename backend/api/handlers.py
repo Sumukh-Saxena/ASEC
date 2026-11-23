@@ -30,11 +30,23 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend import approvals, auth, dashboards, notification_delivery, review, visibility
+from backend import (
+    approvals,
+    auth,
+    dashboards,
+    notification_delivery,
+    review,
+    system_control,
+    visibility,
+)
 from backend import tasks as task_service
 from backend.api import idempotency, read_models
 from backend.api.errors import ApiError
-from backend.api.matrix import RouteAuthorizationError, authorize_route
+from backend.api.matrix import (
+    RouteAuthorizationError,
+    authorize_proposal_acceptance,
+    authorize_route,
+)
 from backend.api.serializers import (
     accept_result_payload,
     approval_payload,
@@ -52,6 +64,7 @@ from backend.api.serializers import (
     reject_result_payload,
     self_person_payload,
     session_payload,
+    system_payload,
     task_payload,
 )
 from backend.auth import AuthenticatedPerson
@@ -193,6 +206,14 @@ class PushEndpointBody(BaseModel):
     provider: Literal["FCM"] = "FCM"
 
 
+class SystemControlBody(BaseModel):
+    """``POST /admin/system/pause|resume`` (owner decision C)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    control: Literal["PROCESSING", "DELIVERY"]
+
+
 router = APIRouter()
 
 _DOMAIN_ERRORS = (
@@ -281,6 +302,22 @@ def _authorize(
             person_id=person.person_id,
             operation=operation,
             subject_id=subject_id,
+        )
+    except RouteAuthorizationError as error:
+        raise ApiError("FORBIDDEN") from error
+
+
+def _authorize_acceptance(
+    connection: sqlite3.Connection,
+    person: AuthenticatedPerson,
+    proposal_id: int,
+) -> None:
+    """The proposal-type refinement of PROPOSAL_ACCEPT (owner decision A)."""
+    try:
+        authorize_proposal_acceptance(
+            connection,
+            person_id=person.person_id,
+            proposal_id=proposal_id,
         )
     except RouteAuthorizationError as error:
         raise ApiError("FORBIDDEN") from error
@@ -818,6 +855,7 @@ def accept_proposal(
     """Accept a proposal and materialize its entity (FR-REV-05, AC-18)."""
     with _request_state(request) as state:
         _authorize(state.connection, person, "PROPOSAL_ACCEPT", proposal_id)
+        _authorize_acceptance(state.connection, person, proposal_id)
 
         def work() -> tuple[int, dict[str, Any]]:
             result = review.accept_proposal(
@@ -1035,7 +1073,10 @@ def volunteer_dashboard(
     """FR-UI-02: own tasks, claimable open tasks and own notifications."""
     with _request_state(request) as state:
         _authorize(state.connection, person, "DASHBOARD_VOLUNTEER")
-        view = dashboards.volunteer_dashboard(state.connection, actor=person)
+        read = request.app.state.read_settings
+        view = dashboards.volunteer_dashboard(
+            state.connection, actor=person, limit=read.dashboard_list_limit
+        )
     return dashboard_volunteer_payload(view)
 
 
@@ -1047,7 +1088,10 @@ def ah_dashboard(
     """FR-UI-03: review queue, created tasks, direct reports, approvals."""
     with _request_state(request) as state:
         _authorize(state.connection, person, "DASHBOARD_AH")
-        view = dashboards.ah_dashboard(state.connection, actor=person)
+        read = request.app.state.read_settings
+        view = dashboards.ah_dashboard(
+            state.connection, actor=person, limit=read.dashboard_list_limit
+        )
     return dashboard_ah_payload(view)
 
 
@@ -1059,7 +1103,10 @@ def head_dashboard(
     """FR-UI-04: the vertical's tasks and people, plus affected cross-vertical work."""
     with _request_state(request) as state:
         _authorize(state.connection, person, "DASHBOARD_HEAD")
-        view = dashboards.head_dashboard(state.connection, actor=person)
+        read = request.app.state.read_settings
+        view = dashboards.head_dashboard(
+            state.connection, actor=person, limit=read.dashboard_list_limit
+        )
     return dashboard_head_payload(view)
 
 
@@ -1068,14 +1115,10 @@ def admin_dashboard(
     request: Request,
     person: PersonDep,
 ) -> dict[str, object]:
-    """FR-UI-05: backlog, attempts, denials, evaluation and config key names."""
+    """FR-UI-05: festival counts, backlog and stop/resume flags."""
     with _request_state(request) as state:
         _authorize(state.connection, person, "DASHBOARD_ADMIN")
-        view = dashboards.admin_dashboard(
-            state.connection,
-            actor=person,
-            config=request.app.state.config,
-        )
+        view = dashboards.admin_dashboard(state.connection, now=state.now)
     return dashboard_admin_payload(view)
 
 
@@ -1178,3 +1221,64 @@ def admin_evaluation_export(
             )
         )
     return _json_response(payload, status)
+
+
+# ---------------------------------------------------------------------------
+# System pause switches (owner decision C, Phase 12 D2)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin/system")
+def admin_system(
+    request: Request,
+    person: PersonDep,
+) -> dict[str, object]:
+    """The two operator switches (Admin only; owner decision B)."""
+    with _request_state(request) as state:
+        _authorize(state.connection, person, "ADMIN_SYSTEM")
+        view = system_control.read_state(state.connection)
+    return system_payload(view)
+
+
+@router.post("/admin/system/pause")
+def pause_system(
+    body: SystemControlBody,
+    request: Request,
+    person: PersonDep,
+) -> Response:
+    """Pause processing or delivery; the other switch is untouched."""
+    with _request_state(request) as state:
+        _authorize(state.connection, person, "ADMIN_SYSTEM_PAUSE")
+
+        def work() -> tuple[int, dict[str, Any]]:
+            view = system_control.pause(
+                state.connection,
+                control=body.control,
+                actor_person_id=person.person_id,
+                now=state.now,
+            )
+            return 200, system_payload(view)
+
+        return _run_mutation(request, state, person, "ADMIN_SYSTEM_PAUSE", work)
+
+
+@router.post("/admin/system/resume")
+def resume_system(
+    body: SystemControlBody,
+    request: Request,
+    person: PersonDep,
+) -> Response:
+    """Resume processing or delivery; the other switch is untouched."""
+    with _request_state(request) as state:
+        _authorize(state.connection, person, "ADMIN_SYSTEM_RESUME")
+
+        def work() -> tuple[int, dict[str, Any]]:
+            view = system_control.resume(
+                state.connection,
+                control=body.control,
+                actor_person_id=person.person_id,
+                now=state.now,
+            )
+            return 200, system_payload(view)
+
+        return _run_mutation(request, state, person, "ADMIN_SYSTEM_RESUME", work)

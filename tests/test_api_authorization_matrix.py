@@ -303,6 +303,29 @@ def _accept_refuse(kind: str) -> Callable[[ApiHarness, str], _Denial]:
     return run
 
 
+def _announcement_refuse(harness: ApiHarness, role: str) -> _Denial:
+    """Refuse PUSH_ANNOUNCEMENT for its two "—" cells.
+
+    Admin's "—" is the owner-decided strict rule (Phase 12 D1): accepting any
+    ANNOUNCEMENT proposal is refused at the route level and recorded against
+    the PUSH_ANNOUNCEMENT operation, not against PROPOSAL_ACCEPT.
+    """
+    if role == "Admin":
+        proposal = _acceptance_proposal(harness, 2, "ANNOUNCE")
+        return _Denial(
+            harness.call(
+                "POST",
+                f"/proposals/{proposal}/accept",
+                headers=_headers(harness, ADMIN_ROLL),
+                json_body={"expected_revision_number": 0},
+            ),
+            "PROPOSAL_ACCEPT",
+            proposal,
+            "NOT_ROLE",
+        )
+    return _accept_refuse("ANNOUNCE")(harness, role)
+
+
 def _approval_request(
     harness: ApiHarness, *, recipients: tuple[int, ...], responsible: int = 1
 ) -> tuple[int, int]:
@@ -570,7 +593,7 @@ _REFUSE: dict[str, Callable[[ApiHarness, str], _Denial]] = {
     "CLAIM_TASK": _claim_refuse,
     "ASSIGNMENT_ACTION": _status_refuse,
     "SEE_PROGRESS": _progress_refuse,
-    "PUSH_ANNOUNCEMENT": _accept_refuse("ANNOUNCE"),
+    "PUSH_ANNOUNCEMENT": _announcement_refuse,
     "VIEW_INTERNALS": _internals_refuse,
 }
 
@@ -600,17 +623,6 @@ def test_every_fr_aut_04_cell(
     assert operation in _SUCCESS and operation in _REFUSE, (
         f"no route scenario for matrix operation {operation}"
     )
-    if operation == "PUSH_ANNOUNCEMENT" and role == "Admin":
-        # NEEDS-OWNER: the SRS cell is "—", but there is no broadcast route:
-        # accepting the announcement is accepting a proposal, and row 2 gives
-        # Admin "Override" there. The surface cannot separate the two without
-        # a new domain rule, so this cell records the implemented behaviour
-        # and is flagged instead of asserting a denial that does not happen.
-        assert matrix.cells[role].kind == CellKind.NO
-        assert matrix.cells[role].needs_owner
-        response = _SUCCESS[operation](harness, role)
-        assert response.status == 200  # type: ignore[attr-defined]
-        return
     if kind == CellKind.NO:
         denial = _REFUSE[operation](harness, role)
         _assert_denial(harness, denial, "NOT_ROLE")
@@ -654,15 +666,67 @@ def test_the_matrix_has_exactly_twelve_operations_and_forty_eight_cells() -> Non
             assert cell.wording.strip() != ""
 
 
-def test_the_cells_that_need_an_owner_are_exactly_the_documented_ones() -> None:
+def test_no_matrix_cell_still_needs_an_owner_after_the_owner_decisions() -> None:
     flagged = {
         (name, role)
         for name, matrix in MATRIX_OPERATIONS.items()
         for role, cell in matrix.cells.items()
         if cell.needs_owner
     }
-    assert flagged == {("PUSH_ANNOUNCEMENT", "Admin")}
+    assert flagged == set()
     assert "NEEDS-OWNER" in MATRIX_OPERATIONS["CREATE_TASK_OWN_VERTICAL"].note
+
+
+def test_an_admin_announcement_refusal_records_the_announcement_operation(
+    harness: ApiHarness,
+) -> None:
+    """Owner decision A (Phase 12 D1): Admin's PUSH_ANNOUNCEMENT cell is strict.
+
+    The refusal is recorded against the announcement operation with the
+    proposal as its subject, and the proposal is left untouched.
+    """
+    proposal = _acceptance_proposal(harness, 2, "ANNOUNCE")
+    response = harness.call(
+        "POST",
+        f"/proposals/{proposal}/accept",
+        headers=_headers(harness, ADMIN_ROLL),
+        json_body={"expected_revision_number": 0},
+    )
+    assert response.status == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+    rows = query(
+        harness.database,
+        "SELECT * FROM authorization_denial ORDER BY id DESC LIMIT 1",
+    )
+    assert rows
+    row = rows[0]
+    assert row["operation"] == "PUSH_ANNOUNCEMENT"
+    assert row["subject_type"] == "PROPOSAL"
+    assert row["subject_id"] == proposal
+    assert row["reason"] == "NOT_ROLE"
+    state = query(
+        harness.database,
+        "SELECT review_state FROM proposal WHERE id = ?",
+        (proposal,),
+    )
+    assert state[0]["review_state"] == "PENDING"
+    assert count(harness.database, "announcement") == 0
+    assert count(harness.database, "task") == 0
+
+
+def test_an_admin_still_accepts_a_non_announcement_proposal(
+    harness: ApiHarness,
+) -> None:
+    """The strict rule is type-scoped: Admin's row-2 override still works."""
+    proposal = _acceptance_proposal(harness, 2, "CREATE")
+    response = harness.call(
+        "POST",
+        f"/proposals/{proposal}/accept",
+        headers=_headers(harness, ADMIN_ROLL),
+        json_body={"expected_revision_number": 0},
+    )
+    assert response.status == 200
+    assert response.json()["proposal_id"] == proposal
 
 
 def test_every_matrix_operation_is_reachable_except_the_documented_roster_gap() -> None:

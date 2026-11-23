@@ -24,15 +24,14 @@ from tests.api_fixtures import (  # noqa: E402
     HEAD_ROLL,
     NOW,
     VOLUNTEER_ROLL,
+    WORLD_AT,
     ApiHarness,
     assign,
     build_harness,
-    count,
     make_approval,
     make_notification,
     make_proposal,
     make_task,
-    query,
     seed_team,
     seed_world,
 )
@@ -249,17 +248,99 @@ def test_head_dashboard_has_the_vertical_and_affected_cross_vertical_tasks(
 # ---------------------------------------------------------------------------
 
 
-def test_admin_dashboard_has_backlog_attempts_denials_evaluation_and_config_names(
+def test_admin_dashboard_is_a_festival_glance_without_internal_ledgers(
     harness: ApiHarness,
 ) -> None:
+    """Owner decision B/D1: cumulative counts only, no attempt/denial/config data."""
     _seed_backlog(harness)
-    make_task(harness.database, creator_id=3)
-    labelled = make_proposal(harness.database, sender_person_id=3)
+    _execute(
+        harness.database,
+        "INSERT INTO bucket (id, group_id, start_event_timestamp,"
+        " end_event_timestamp, processing_state) VALUES"
+        " (3, 1, ?, ?, 'CLOSED'), (4, 1, ?, ?, 'FAILED'),"
+        " (5, 2, ?, ?, 'AWAITING_RECOVERY')",
+        (WORLD_AT, WORLD_AT, WORLD_AT, WORLD_AT, WORLD_AT, WORLD_AT),
+    )
+
+    completed = make_task(harness.database, creator_id=3)
+    in_progress = make_task(
+        harness.database, creator_id=3, responsible_vertical_id=2
+    )
+    idle = make_task(harness.database, creator_id=3)
+    assign(harness.database, completed, 4, work_status="COMPLETED")
+    assign(harness.database, in_progress, 4, work_status="IN_PROGRESS")
+    assign(
+        harness.database, in_progress, 7, agreement="ACCEPTED",
+        work_status="NOT_STARTED",
+    )
+    assign(harness.database, idle, 4, agreement="AWAITING")
+
     make_proposal(harness.database, sender_person_id=3)
+    accepted = make_proposal(harness.database, sender_person_id=3)
+    rejected = make_proposal(harness.database, sender_person_id=3)
+    edited = make_proposal(harness.database, sender_person_id=3)
+    _execute(
+        harness.database,
+        "UPDATE proposal SET review_state = 'ACCEPTED' WHERE id = ?",
+        (accepted,),
+    )
     _execute(
         harness.database,
         "UPDATE proposal SET review_state = 'REJECTED' WHERE id = ?",
-        (labelled,),
+        (rejected,),
+    )
+    _execute(
+        harness.database,
+        "UPDATE proposal SET review_state = 'EDITED' WHERE id = ?",
+        (edited,),
+    )
+
+    for index, state in enumerate(
+        ("PENDING", "SENDING", "SENT", "FAILED", "EXHAUSTED", "EXHAUSTED"),
+        start=1,
+    ):
+        notification_id = make_notification(
+            harness.database, task_id=completed, dedupe_key=f"n{index}"
+        )
+        _execute(
+            harness.database,
+            "UPDATE notification SET delivery_state = ? WHERE id = ?",
+            (state, notification_id),
+        )
+    _execute(
+        harness.database,
+        "INSERT INTO notification_attempt (notification_id, attempt_number,"
+        " outcome, recorded_at) VALUES (5, 1, 'NO_ENDPOINT', ?),"
+        " (6, 1, 'RENDER_ERROR', ?)",
+        (WORLD_AT, WORLD_AT),
+    )
+
+    _execute(
+        harness.database,
+        "INSERT INTO processing_attempt (id, stage, bucket_id, started_at,"
+        " finished_at, outcome, model_id, model_version, config_version)"
+        " VALUES (900, 'RELEVANCE_CLASSIFICATION', 1, ?, ?, 'SUCCEEDED',"
+        " 'model-r', '1.0.0', 'prompt-1'),"
+        " (901, 'RELEVANCE_FALLBACK_CLASSIFICATION', 2, ?, ?,"
+        " 'FAILED_RETRYABLE', NULL, NULL, NULL)",
+        (WORLD_AT, WORLD_AT, WORLD_AT, WORLD_AT),
+    )
+    _execute(
+        harness.database,
+        "INSERT INTO relevance_decision (bucket_id, message_id, attempt_id,"
+        " decision, model_id, model_version, prompt_version, decided_at)"
+        " VALUES (1, 1, 900, 'RELEVANT', 'model-r', '1.0.0', 'prompt-1', ?),"
+        " (1, 2, 900, 'IRRELEVANT', 'model-r', '1.0.0', 'prompt-1', ?)",
+        (WORLD_AT, WORLD_AT),
+    )
+    _execute(
+        harness.database,
+        "UPDATE source_message SET flag_unclassified = 1 WHERE id = 3",
+    )
+    _execute(
+        harness.database,
+        "UPDATE source_message SET received_at = '2026-11-13T08:00:00+00:00'"
+        " WHERE id = 1",
     )
 
     forbidden = harness.call(
@@ -271,31 +352,68 @@ def test_admin_dashboard_has_backlog_attempts_denials_evaluation_and_config_name
         "GET", "/dashboard/admin", headers=_headers(harness, ADMIN_ROLL)
     ).json()
 
-    assert body["backlog"]["unprocessed_buckets"] == 1
-    assert body["backlog"]["unassigned_messages"] == 0
-    assert body["backlog"]["oldest_age_seconds"] == 120
-    groups = {group["group_id"]: group for group in body["backlog"]["groups"]}
-    assert groups[1]["unprocessed_buckets"] == 1
-    assert groups[1]["oldest_unprocessed_bucket_id"] == 1
-    assert groups[1]["age_event_seconds"] == 120
-    assert groups[2]["unprocessed_buckets"] == 0
-    assert groups[2]["age_event_seconds"] is None
-
-    outcomes = {
-        row["outcome"]: int(row["n"])
-        for row in query(
-            harness.database,
-            "SELECT outcome, COUNT(*) AS n FROM processing_attempt GROUP BY outcome",
-        )
+    assert body["messages"] == {"total": 7, "last_24h": 1}
+    assert body["buckets"] == {
+        "OPEN": 1,
+        "CLOSED": 1,
+        "PROCESSED": 1,
+        "FAILED": 1,
+        "AWAITING_RECOVERY": 1,
     }
-    assert body["attempts"]["total"] == sum(outcomes.values())
-    assert body["attempts"]["by_outcome"] == outcomes
-
-    assert body["denials"]["total"] == count(
-        harness.database, "authorization_denial"
-    )
-    assert body["evaluation"] == {"available": True, "labelled_proposals": 1}
-    assert body["config"]["keys"] == ["API_PORT", "DISCORD_BOT_TOKEN"]
+    assert body["relevance"] == {
+        "relevant": 1,
+        "irrelevant": 1,
+        "failed": 1,
+        "unclassified": 1,
+    }
+    assert body["proposals"] == {
+        "pending_review": 5,
+        "accepted": 1,
+        "rejected": 1,
+    }
+    assert body["tasks"]["total"] == 3
+    assert body["tasks"]["by_status"] == {
+        "NOT_STARTED": 1,
+        "IN_PROGRESS": 1,
+        "COMPLETED": 1,
+    }
+    assert body["tasks"]["by_vertical"] == [
+        {
+            "vertical_id": 1,
+            "total": 2,
+            "by_status": {
+                "NOT_STARTED": 1,
+                "IN_PROGRESS": 0,
+                "COMPLETED": 1,
+            },
+        },
+        {
+            "vertical_id": 2,
+            "total": 1,
+            "by_status": {
+                "NOT_STARTED": 0,
+                "IN_PROGRESS": 1,
+                "COMPLETED": 0,
+            },
+        },
+    ]
+    assert body["notifications"] == {
+        "pending": 2,
+        "delivered": 1,
+        "retrying": 1,
+        "exhausted": 1,
+        "no_endpoint": 1,
+    }
+    assert body["backlog"] == {
+        "unprocessed_buckets": 4,
+        "oldest_age_seconds": 120,
+    }
+    assert body["system"] == {
+        "processing_paused": False,
+        "delivery_paused": False,
+    }
+    for removed in ("attempts", "denials", "evaluation", "config"):
+        assert removed not in body
     assert CONFIG_VALUE not in str(body)
 
 
@@ -361,3 +479,162 @@ def test_dashboard_task_reads_stay_within_visible_tasks(
     exposed = {item["id"] for item in visible}
     assert {item["id"] for item in body["tasks"]} <= exposed
     assert {item["id"] for item in body["open_tasks"]} <= exposed
+
+
+# ---------------------------------------------------------------------------
+# Count badges, attention counts and the list cap (owner decision E, D4)
+# ---------------------------------------------------------------------------
+
+
+def test_volunteer_dashboard_reports_counts_attention_and_has_more(
+    harness: ApiHarness,
+) -> None:
+    active = make_task(harness.database, creator_id=3)
+    assign(
+        harness.database, active, 4, agreement="ACCEPTED", work_status="IN_PROGRESS"
+    )
+    finished = make_task(harness.database, creator_id=3)
+    assign(
+        harness.database, finished, 4, agreement="ACCEPTED", work_status="COMPLETED"
+    )
+    claimable = make_task(
+        harness.database,
+        creator_id=3,
+        assignment_mode="OPEN",
+        people_needed_unlimited=1,
+    )
+    read = make_notification(
+        harness.database,
+        recipient_person_id=4,
+        task_id=active,
+        dedupe_key="d4-read",
+    )
+    make_notification(
+        harness.database,
+        recipient_person_id=4,
+        task_id=active,
+        dedupe_key="d4-unread",
+    )
+    _execute(
+        harness.database,
+        "INSERT INTO notification_read (notification_id, read_at) VALUES (?, ?)",
+        (read, NOW),
+    )
+
+    body = harness.call(
+        "GET", "/dashboard/volunteer", headers=_headers(harness, VOLUNTEER_ROLL)
+    ).json()
+
+    assert body["counts"] == {"tasks": 2, "open_tasks": 1, "notifications": 2}
+    assert body["attention"] == {
+        "unread_notifications": 1,
+        "open_tasks": 1,
+        "active_tasks": 1,
+    }
+    assert body["has_more"] == {
+        "tasks": False,
+        "open_tasks": False,
+        "notifications": False,
+    }
+    assert [task["id"] for task in body["open_tasks"]] == [claimable]
+    assert len(body["tasks"]) == 2
+    assert len(body["notifications"]) == 2
+
+
+def test_ah_dashboard_reports_counts_attention_and_has_more(
+    harness: ApiHarness,
+) -> None:
+    make_proposal(harness.database, sender_person_id=3)
+    created = make_task(harness.database, creator_id=3)
+    assign(
+        harness.database, created, 4, agreement="ACCEPTED", work_status="IN_PROGRESS"
+    )
+    approval_task = make_task(
+        harness.database, creator_id=3, approval_state="PENDING"
+    )
+    make_approval(
+        harness.database, approval_task, requested_by=3, recipients=(3,)
+    )
+    _settle_tasks(harness, created, approval_task)
+
+    body = harness.call(
+        "GET", "/dashboard/ah", headers=_headers(harness, AH_ROLL)
+    ).json()
+
+    assert body["counts"] == {
+        "review_queue": 1,
+        "created_tasks": 1,
+        "volunteers": 2,
+        "approvals": 1,
+    }
+    assert body["attention"] == {
+        "pending_review": 1,
+        "approvals": 1,
+        "active_created_tasks": 1,
+    }
+    assert body["has_more"] == {
+        "review_queue": False,
+        "created_tasks": False,
+        "volunteers": False,
+        "approvals": False,
+    }
+
+
+def test_head_dashboard_reports_counts_attention_and_has_more(
+    harness: ApiHarness,
+) -> None:
+    task = make_task(harness.database, creator_id=3)
+    assign(harness.database, task, 4, agreement="ACCEPTED")
+
+    body = harness.call(
+        "GET", "/dashboard/head", headers=_headers(harness, HEAD_ROLL)
+    ).json()
+
+    for name in (
+        "review_queue",
+        "tasks",
+        "people",
+        "approvals",
+        "cross_vertical_tasks",
+    ):
+        assert body["has_more"][name] is False
+        assert body["counts"][name] == len(body[name]), name
+    assert set(body["attention"]) == {
+        "pending_review",
+        "approvals",
+        "active_tasks",
+    }
+    assert body["attention"]["active_tasks"] == 1
+
+
+def test_the_dashboard_cap_limits_each_list_and_keeps_the_totals(
+    tmp_path: Path,
+) -> None:
+    built = build_harness(
+        tmp_path, config=Config({"API_DASHBOARD_LIST_LIMIT": "1"})
+    )
+    seed_world(built.database)
+    seed_team(built.database)
+    first = make_task(built.database, creator_id=3)
+    assign(built.database, first, 4, agreement="ACCEPTED")
+    second = make_task(built.database, creator_id=3)
+    assign(built.database, second, 4, agreement="ACCEPTED")
+    make_notification(
+        built.database, recipient_person_id=4, task_id=first, dedupe_key="d4-cap-1"
+    )
+    make_notification(
+        built.database, recipient_person_id=4, task_id=second, dedupe_key="d4-cap-2"
+    )
+
+    body = built.call(
+        "GET", "/dashboard/volunteer", headers=_headers(built, VOLUNTEER_ROLL)
+    ).json()
+
+    assert len(body["tasks"]) == 1
+    assert len(body["notifications"]) == 1
+    assert body["counts"] == {"tasks": 2, "open_tasks": 0, "notifications": 2}
+    assert body["has_more"] == {
+        "tasks": True,
+        "open_tasks": False,
+        "notifications": True,
+    }

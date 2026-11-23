@@ -61,10 +61,10 @@ def _add_person(connection: sqlite3.Connection) -> int:
 
 
 def test_0024_applies_once_and_reapplies_as_a_no_op(conn: sqlite3.Connection) -> None:
-    assert _versions(conn) == list(range(1, 26))
+    assert _versions(conn) == list(range(1, 27))
     assert set(_NEW_TABLES) <= _table_names(conn)
     assert apply_migrations(conn) == []
-    assert _versions(conn) == list(range(1, 26))
+    assert _versions(conn) == list(range(1, 27))
 
 
 def test_0024_has_no_plaintext_code_or_token_column(conn: sqlite3.Connection) -> None:

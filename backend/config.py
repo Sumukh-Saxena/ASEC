@@ -479,19 +479,24 @@ def load_idempotency_settings(config: Config) -> IdempotencySettings:
 DEFAULT_API_TASKS_PAGE_DEFAULT = 50
 DEFAULT_API_TASKS_PAGE_MAX = 200
 DEFAULT_API_ADMIN_READ_LIMIT = 500
+#: Owner decision E (D4): the role dashboards are a fixed-size view, so every
+#: list in them is capped and the payload reports whether more rows exist.
+DEFAULT_API_DASHBOARD_LIST_LIMIT = 50
 
 API_TASKS_PAGE_DEFAULT_KEY = "API_TASKS_PAGE_DEFAULT"
 API_TASKS_PAGE_MAX_KEY = "API_TASKS_PAGE_MAX"
 API_ADMIN_READ_LIMIT_KEY = "API_ADMIN_READ_LIMIT"
+API_DASHBOARD_LIST_LIMIT_KEY = "API_DASHBOARD_LIST_LIMIT"
 
 
 @dataclass(frozen=True)
 class ApiReadSettings:
-    """Validated page limits for the task and admin read routes (W3/W4)."""
+    """Validated page limits for the task, admin and dashboard reads (W3/W4)."""
 
     tasks_page_default: int = DEFAULT_API_TASKS_PAGE_DEFAULT
     tasks_page_max: int = DEFAULT_API_TASKS_PAGE_MAX
     admin_read_limit: int = DEFAULT_API_ADMIN_READ_LIMIT
+    dashboard_list_limit: int = DEFAULT_API_DASHBOARD_LIST_LIMIT
 
 
 def load_api_read_settings(config: Config) -> ApiReadSettings:
@@ -523,6 +528,13 @@ def load_api_read_settings(config: Config) -> ApiReadSettings:
             DEFAULT_API_ADMIN_READ_LIMIT,
             minimum=1,
             maximum=5000,
+        ),
+        dashboard_list_limit=_bounded_int(
+            config,
+            API_DASHBOARD_LIST_LIMIT_KEY,
+            DEFAULT_API_DASHBOARD_LIST_LIMIT,
+            minimum=1,
+            maximum=200,
         ),
     )
 

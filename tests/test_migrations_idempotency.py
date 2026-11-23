@@ -89,10 +89,10 @@ def _insert(
 
 
 def test_0025_applies_once_and_reapplies_as_a_no_op(conn: sqlite3.Connection) -> None:
-    assert _versions(conn) == list(range(1, 26))
+    assert _versions(conn) == list(range(1, 27))
     assert "idempotency_key" in _table_names(conn)
     assert apply_migrations(conn) == []
-    assert _versions(conn) == list(range(1, 26))
+    assert _versions(conn) == list(range(1, 27))
 
 
 def test_the_table_has_exactly_the_planned_columns(conn: sqlite3.Connection) -> None:
