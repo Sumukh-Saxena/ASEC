@@ -16,6 +16,7 @@ until interrupted. It installs no scheduler and prints counts only.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import sys
@@ -23,6 +24,7 @@ import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from backend import __version__
 from backend.alerts import LogAlertSender
@@ -81,12 +83,131 @@ _SERVE_API_USAGE = (
 
 _EXPORT_USAGE = (
     "usage: python -m backend export --db <database path>"
-    " --destination <directory> [--unmasked]"
+    " --destination <directory>"
+    " [--unmasked --i-understand-this-contains-real-data]"
 )
+
+#: The explicit acknowledgement an unmasked export requires (owner decision D).
+_UNMASKED_ACK = "--i-understand-this-contains-real-data"
+
+_OPENAPI_USAGE = "usage: python -m backend openapi [--check]"
+
+#: The checked-in OpenAPI document, relative to the repository root.
+_OPENAPI_PATH = (
+    Path(__file__).resolve().parent.parent / "docs" / "api" / "openapi.json"
+)
+
+#: A fixed instant for the dummy app; the document build never reads a clock.
+_OPENAPI_NOW = "1970-01-01T00:00:00+00:00"
+
+#: The one optional mutation header, documented next to the error table.
+_IDEMPOTENCY_HEADER = "Idempotency-Key"
 
 #: Only these literals are treated as loopback; anything else needs the
 #: explicit API_ALLOW_NON_LOOPBACK flag (W2, O12-6).
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _openapi_connection_factory() -> sqlite3.Connection:
+    """A factory that must never be called: the document needs no database."""
+    raise RuntimeError("the OpenAPI document is built without a database")
+
+
+def _build_openapi_spec() -> dict[str, Any]:
+    """Build the real app with dummy settings and return its OpenAPI document.
+
+    No database connection, network call, environment value, secret or bound
+    port is involved: the connection factory raises if anything tries to use
+    it, the clock is a fixed instant, and the configuration is empty (so every
+    setting takes its documented default).
+    """
+    from backend.api import create_app
+    from backend.api.errors import ERROR_MESSAGES
+
+    app = create_app(
+        connection_factory=_openapi_connection_factory,
+        now=lambda: _OPENAPI_NOW,
+        config=Config({}),
+        otp_sender=None,
+    )
+    spec: dict[str, Any] = app.openapi()
+    components = spec.setdefault("components", {})
+    parameters = components.setdefault("parameters", {})
+    parameters["IdempotencyKey"] = {
+        "name": _IDEMPOTENCY_HEADER,
+        "in": "header",
+        "required": False,
+        "description": (
+            "Optional client key for a mutating request; a replay of the same"
+            " key returns the stored response."
+        ),
+        "schema": {"type": "string", "minLength": 16, "maxLength": 64},
+    }
+    schemas = components.setdefault("schemas", {})
+    schemas["ErrorResponse"] = {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+            "error": {
+                "type": "object",
+                "required": ["code", "message", "request_id"],
+                "properties": {
+                    "code": {"type": "string"},
+                    "message": {"type": "string"},
+                    "request_id": {"type": "string"},
+                },
+            }
+        },
+    }
+    spec["x-asec-idempotency-key"] = {
+        "header": _IDEMPOTENCY_HEADER,
+        "component": "#/components/parameters/IdempotencyKey",
+    }
+    spec["x-asec-error-codes"] = {
+        code: {"status": status, "message": message}
+        for code, (status, message) in sorted(ERROR_MESSAGES.items())
+    }
+    return spec
+
+
+def _render_openapi(spec: dict[str, Any]) -> str:
+    """Render deterministically: sorted keys, two-space indent, LF, one newline."""
+    return json.dumps(spec, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def _run_openapi(args: Sequence[str], *, path: Path | None = None) -> int:
+    """Write the document, or check it with ``--check`` and never write on drift."""
+    check = False
+    if args == ["--check"]:
+        check = True
+    elif args:
+        print(_OPENAPI_USAGE, file=sys.stderr)
+        return 2
+    from backend.api import ApiConfigurationError
+
+    try:
+        spec = _build_openapi_spec()
+    except ApiConfigurationError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    rendered = _render_openapi(spec)
+    destination = _OPENAPI_PATH if path is None else path
+    if check:
+        try:
+            with destination.open("r", encoding="utf-8", newline="") as handle:
+                existing = handle.read()
+        except OSError:
+            print(f"openapi drift: {destination} is missing", file=sys.stderr)
+            return 1
+        if existing != rendered:
+            print(f"openapi drift: {destination} is out of date", file=sys.stderr)
+            return 1
+        print("openapi: up to date")
+        return 0
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(rendered, encoding="utf-8", newline="")
+    print(f"openapi: wrote {destination}")
+    return 0
 
 
 def _parse_smoke_args(args: Sequence[str]) -> tuple[str, str] | None:
@@ -551,7 +672,8 @@ def _run_serve_api(
 def _parse_export_args(args: Sequence[str]) -> tuple[str, str, bool] | None:
     database: str | None = None
     destination: str | None = None
-    masked = True
+    unmasked = False
+    acknowledged = False
     index = 0
     while index < len(args):
         option = args[index]
@@ -568,13 +690,19 @@ def _parse_export_args(args: Sequence[str]) -> tuple[str, str, bool] | None:
             index += 2
             continue
         if option == "--unmasked":
-            masked = False
+            unmasked = True
+            index += 1
+            continue
+        if option == _UNMASKED_ACK:
+            acknowledged = True
             index += 1
             continue
         return None
     if database is None or destination is None:
         return None
-    return database, destination, masked
+    if unmasked != acknowledged:
+        return None
+    return database, destination, not unmasked
 
 
 def _run_export(args: Sequence[str], *, now: str) -> int:
@@ -583,6 +711,12 @@ def _run_export(args: Sequence[str], *, now: str) -> int:
         print(_EXPORT_USAGE, file=sys.stderr)
         return 2
     database, destination, masked = parsed
+    if not masked:
+        print(
+            "warning: unmasked export contains real personal data;"
+            " keep the destination private",
+            file=sys.stderr,
+        )
     try:
         result = export_database(
             database,
@@ -643,9 +777,11 @@ def main(
         return _run_export(
             args[1:], now=(_utc_now if now is None else now)()
         )
+    if args and args[0] == "openapi":
+        return _run_openapi(args[1:])
     print(
         "ASEC backend (Phase 0). Use --version, 'discord-smoke', 'run-live',"
-        " 'import-groups', 'serve-api' or 'export'.",
+        " 'import-groups', 'serve-api', 'export' or 'openapi'.",
         file=sys.stderr,
     )
     return 2

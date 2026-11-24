@@ -60,7 +60,7 @@ from backend.ingest import ingest_message
 from backend.orchestration import run_bucketing_pass
 from backend.proposals import ProposalGenerator, run_proposal_pass
 from backend.relevance import RelevanceClassifier, run_relevance_pass
-from backend.system_control import is_delivery_paused, is_processing_paused
+from backend.system_control import optional_stages_paused
 
 logger = logging.getLogger("asec.worker")
 
@@ -136,6 +136,7 @@ def run_pipeline_tick(
     parts: PartSettings | None = None,
     poll_instants: Mapping[int, str] | None = None,
     poll_safety_margin_seconds: float = DEFAULT_POLL_SAFETY_MARGIN_SECONDS,
+    processing_paused: bool | None = None,
 ) -> TickResult:
     """Run one durable pipeline tick; ``now`` is the injected clock instant.
 
@@ -163,16 +164,11 @@ def run_pipeline_tick(
             "poll_safety_margin_seconds must be non-negative,"
             f" got {poll_safety_margin_seconds!r}"
         )
-    if is_processing_paused(connection):
-        # Owner decision C: a processing pause stops this tick before any clock
-        # write or bucket formation. Ingestion already happened in the caller.
-        return TickResult(
-            groups=(),
-            assigned=0,
-            skipped=0,
-            relevance=None,
-            proposals=None,
-        )
+    if processing_paused is None:
+        # Owner decision C: a processing pause skips only the optional AI
+        # stages. Ingestion, the durable clock and bucket closure keep running,
+        # so the backlog is ready and lossless when the operator resumes.
+        processing_paused, _delivery = optional_stages_paused(connection)
     if poll_instants is None:
         groups = tuple(
             advance_group_clock(connection, group_id, now=now, mode=clock_mode)
@@ -198,7 +194,7 @@ def run_pipeline_tick(
     active_parts = PartSettings() if parts is None else parts
     relevance = (
         None
-        if classifier is None
+        if classifier is None or processing_paused
         else run_relevance_pass(
             connection,
             classifier,
@@ -207,7 +203,7 @@ def run_pipeline_tick(
     )
     proposals = (
         None
-        if generator is None
+        if generator is None or processing_paused
         else run_proposal_pass(
             connection,
             generator,
@@ -312,6 +308,7 @@ def run_live_tick(
     failures: dict[int, int] = (
         {} if consecutive_failures is None else consecutive_failures
     )
+    processing_paused, delivery_paused = optional_stages_paused(connection)
     tick_now = now()
     poll_instants: dict[int, str] = {}
     polls: list[GroupPollResult] = []
@@ -395,8 +392,9 @@ def run_live_tick(
         parts=parts,
         poll_instants=poll_instants,
         poll_safety_margin_seconds=poll_safety_margin_seconds,
+        processing_paused=processing_paused,
     )
-    if delivery_tick is not None and not is_delivery_paused(connection):
+    if delivery_tick is not None and not delivery_paused:
         try:
             delivery_tick()
         except Exception as error:  # noqa: BLE001 - delivery must not fail

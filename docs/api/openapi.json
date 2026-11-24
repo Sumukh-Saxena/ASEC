@@ -1,0 +1,1959 @@
+{
+  "components": {
+    "parameters": {
+      "IdempotencyKey": {
+        "description": "Optional client key for a mutating request; a replay of the same key returns the stored response.",
+        "in": "header",
+        "name": "Idempotency-Key",
+        "required": false,
+        "schema": {
+          "maxLength": 64,
+          "minLength": 16,
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "AcceptBody": {
+        "additionalProperties": false,
+        "description": "``POST /proposals/{id}/accept`` (FR-REV-05).",
+        "properties": {
+          "expected_revision_number": {
+            "minimum": 0.0,
+            "title": "Expected Revision Number",
+            "type": "integer"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "request_message": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Message"
+          }
+        },
+        "required": [
+          "expected_revision_number"
+        ],
+        "title": "AcceptBody",
+        "type": "object"
+      },
+      "AgreementBody": {
+        "additionalProperties": false,
+        "description": "``POST /tasks/{id}/agreement`` (FR-TSK-03/05).",
+        "properties": {
+          "agreement": {
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Agreement",
+            "type": "string"
+          },
+          "assignee_person_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Person Id"
+          }
+        },
+        "required": [
+          "agreement"
+        ],
+        "title": "AgreementBody",
+        "type": "object"
+      },
+      "AssigneeBody": {
+        "additionalProperties": false,
+        "description": "One reviewer-supplied assignee in ``POST /proposals/{id}/edits``.",
+        "properties": {
+          "person_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Person Id"
+          },
+          "text": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "AssigneeBody",
+        "type": "object"
+      },
+      "CancelBody": {
+        "additionalProperties": false,
+        "description": "``POST /tasks/{id}/cancel`` (FR-TSK-08).",
+        "properties": {
+          "reason": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "CancelBody",
+        "type": "object"
+      },
+      "DecisionBody": {
+        "additionalProperties": false,
+        "description": "``POST /approvals/{id}/decision`` (FR-XV-04).",
+        "properties": {
+          "decision": {
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Decision",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "title": "DecisionBody",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "request_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "request_id"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "OtpRequestBody": {
+        "additionalProperties": false,
+        "description": "``POST /auth/otp``; unknown fields are rejected, not ignored.",
+        "properties": {
+          "roll_number": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Roll Number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "roll_number"
+        ],
+        "title": "OtpRequestBody",
+        "type": "object"
+      },
+      "ProposalEditBody": {
+        "additionalProperties": false,
+        "description": "``POST /proposals/{id}/edits``; supplied fields only are applied (A2).",
+        "properties": {
+          "affected_vertical_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Affected Vertical Ids"
+          },
+          "assignees": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AssigneeBody"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignees"
+          },
+          "assignment_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Mode"
+          },
+          "attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attributes"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "expected_revision_number": {
+            "minimum": 0.0,
+            "title": "Expected Revision Number",
+            "type": "integer"
+          },
+          "people_needed": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "People Needed"
+          },
+          "people_needed_unlimited": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "People Needed Unlimited"
+          },
+          "responsible_vertical_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Responsible Vertical Id"
+          },
+          "task_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Type"
+          }
+        },
+        "required": [
+          "expected_revision_number"
+        ],
+        "title": "ProposalEditBody",
+        "type": "object"
+      },
+      "PushEndpointBody": {
+        "additionalProperties": false,
+        "description": "``POST /push-endpoints``; the token is accepted, never echoed.",
+        "properties": {
+          "provider": {
+            "const": "FCM",
+            "default": "FCM",
+            "title": "Provider",
+            "type": "string"
+          },
+          "token": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "PushEndpointBody",
+        "type": "object"
+      },
+      "ReassignBody": {
+        "additionalProperties": false,
+        "description": "``POST /tasks/{id}/reassign`` (FR-TSK-10).",
+        "properties": {
+          "add": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Add",
+            "type": "array"
+          },
+          "expected_version": {
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "remove": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Remove",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "title": "ReassignBody",
+        "type": "object"
+      },
+      "RejectBody": {
+        "additionalProperties": false,
+        "description": "``POST /proposals/{id}/reject`` (FR-REV-07).",
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "title": "RejectBody",
+        "type": "object"
+      },
+      "StatusBody": {
+        "additionalProperties": false,
+        "description": "``POST /tasks/{id}/status`` (FR-TSK-06/07).",
+        "properties": {
+          "assignee_person_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Person Id"
+          },
+          "status": {
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "StatusBody",
+        "type": "object"
+      },
+      "SystemControlBody": {
+        "additionalProperties": false,
+        "description": "``POST /admin/system/pause|resume`` (owner decision C).",
+        "properties": {
+          "control": {
+            "enum": [
+              "PROCESSING",
+              "DELIVERY"
+            ],
+            "title": "Control",
+            "type": "string"
+          }
+        },
+        "required": [
+          "control"
+        ],
+        "title": "SystemControlBody",
+        "type": "object"
+      },
+      "TaskEditBody": {
+        "additionalProperties": false,
+        "description": "``PATCH /tasks/{id}``; ``expected_version`` makes the edit optimistic.",
+        "properties": {
+          "attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attributes"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "expected_version": {
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "people_needed": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "People Needed"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "title": "TaskEditBody",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "VerifyRequestBody": {
+        "additionalProperties": false,
+        "description": "``POST /auth/verify``; the code is bounded and never logged.",
+        "properties": {
+          "code": {
+            "maxLength": 12,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "roll_number": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Roll Number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "roll_number",
+          "code"
+        ],
+        "title": "VerifyRequestBody",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "ASEC API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/admin/attempts": {
+      "get": {
+        "description": "The processing-attempt ledger, newest first, without error text.",
+        "operationId": "admin_attempts_admin_attempts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Attempts Admin Attempts Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Attempts"
+      }
+    },
+    "/admin/backlog": {
+      "get": {
+        "description": "NFR-REL-06: unprocessed bucket count and the oldest bucket's age.",
+        "operationId": "admin_backlog_admin_backlog_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Backlog Admin Backlog Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin Backlog"
+      }
+    },
+    "/admin/config": {
+      "get": {
+        "description": "Configuration names with every value redacted (NFR-SEC-01).",
+        "operationId": "admin_config_admin_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Config Admin Config Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin Config"
+      }
+    },
+    "/admin/denials": {
+      "get": {
+        "description": "The recorded denial ledger, newest first (FR-AUT-06).",
+        "operationId": "admin_denials_admin_denials_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Denials Admin Denials Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Denials"
+      }
+    },
+    "/admin/evaluation/export": {
+      "get": {
+        "description": "Labelled review data for evaluation (FR-REV-08).",
+        "operationId": "admin_evaluation_export_admin_evaluation_export_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin Evaluation Export"
+      }
+    },
+    "/admin/system": {
+      "get": {
+        "description": "The two operator switches (Admin only; owner decision B).",
+        "operationId": "admin_system_admin_system_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin System Admin System Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin System"
+      }
+    },
+    "/admin/system/pause": {
+      "post": {
+        "description": "Pause processing or delivery; the other switch is untouched.",
+        "operationId": "pause_system_admin_system_pause_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SystemControlBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pause System"
+      }
+    },
+    "/admin/system/resume": {
+      "post": {
+        "description": "Resume processing or delivery; the other switch is untouched.",
+        "operationId": "resume_system_admin_system_resume_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SystemControlBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume System"
+      }
+    },
+    "/approvals": {
+      "get": {
+        "description": "Undecided requests visible to the caller (FR-UI-03).",
+        "operationId": "list_approvals_approvals_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Approvals"
+      }
+    },
+    "/approvals/{request_id}": {
+      "get": {
+        "description": "One approval request the caller may see.",
+        "operationId": "get_approval_approvals__request_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Approval"
+      }
+    },
+    "/approvals/{request_id}/decision": {
+      "post": {
+        "description": "Resolve one request; the first decision wins (FR-XV-04, AC-15).",
+        "operationId": "decide_approval_approvals__request_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Approval"
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "description": "Revoke the presented session; a second logout is not an error.",
+        "operationId": "logout_auth_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Logout"
+      }
+    },
+    "/auth/otp": {
+      "post": {
+        "description": "Accept an OTP request. The same 202 is returned for every outcome.\n\nThe response cannot reveal whether the roll number exists, whether the\nperson is active, whether a challenge was created or whether a DM left the\nbuilding: those outcomes live only in the private ``auth_attempt`` ledger.\nOnly an unusable request value (empty after trimming) is a 422, and that\ndecision is the service's, not the handler's.",
+        "operationId": "request_otp_auth_otp_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OtpRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Request Otp Auth Otp Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Otp"
+      }
+    },
+    "/auth/verify": {
+      "post": {
+        "description": "Exchange a valid code for one session token (returned only here).",
+        "operationId": "verify_otp_auth_verify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Verify Otp Auth Verify Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Otp"
+      }
+    },
+    "/dashboard/admin": {
+      "get": {
+        "description": "FR-UI-05: festival counts, backlog and stop/resume flags.",
+        "operationId": "admin_dashboard_dashboard_admin_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Dashboard Dashboard Admin Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin Dashboard"
+      }
+    },
+    "/dashboard/ah": {
+      "get": {
+        "description": "FR-UI-03: review queue, created tasks, direct reports, approvals.",
+        "operationId": "ah_dashboard_dashboard_ah_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ah Dashboard Dashboard Ah Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ah Dashboard"
+      }
+    },
+    "/dashboard/head": {
+      "get": {
+        "description": "FR-UI-04: the vertical's tasks and people, plus affected cross-vertical work.",
+        "operationId": "head_dashboard_dashboard_head_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Head Dashboard Dashboard Head Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Head Dashboard"
+      }
+    },
+    "/dashboard/volunteer": {
+      "get": {
+        "description": "FR-UI-02: own tasks, claimable open tasks and own notifications.",
+        "operationId": "volunteer_dashboard_dashboard_volunteer_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Volunteer Dashboard Dashboard Volunteer Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Volunteer Dashboard"
+      }
+    },
+    "/healthz": {
+      "get": {
+        "description": "Public liveness probe: a constant, no detail, no database access.",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Healthz Healthz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Healthz"
+      }
+    },
+    "/me": {
+      "get": {
+        "description": "The caller's own identity, with their own contact details (NFR-SEC-03).",
+        "operationId": "me_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Me Me Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Me"
+      }
+    },
+    "/notifications": {
+      "get": {
+        "description": "Only the caller's own notifications, newest last (NFR-SEC-03).",
+        "operationId": "list_notifications_notifications_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "unread_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unread Only",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Notifications Notifications Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Notifications"
+      }
+    },
+    "/notifications/{notification_id}/read": {
+      "post": {
+        "description": "Mark the caller's own notification read; a repeat is not an error.",
+        "operationId": "mark_notification_read_notifications__notification_id__read_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notification_id",
+            "required": true,
+            "schema": {
+              "title": "Notification Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark Notification Read"
+      }
+    },
+    "/proposals/{proposal_id}": {
+      "get": {
+        "description": "The Phase 6 reviewer view; the one response carrying message content.",
+        "operationId": "get_proposal_proposals__proposal_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Proposal"
+      }
+    },
+    "/proposals/{proposal_id}/accept": {
+      "post": {
+        "description": "Accept a proposal and materialize its entity (FR-REV-05, AC-18).",
+        "operationId": "accept_proposal_proposals__proposal_id__accept_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept Proposal"
+      }
+    },
+    "/proposals/{proposal_id}/edits": {
+      "post": {
+        "description": "Append one immutable revision (FR-REV-03/04).",
+        "operationId": "edit_proposal_proposals__proposal_id__edits_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProposalEditBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit Proposal"
+      }
+    },
+    "/proposals/{proposal_id}/reject": {
+      "post": {
+        "description": "Reject a proposal, keeping it and its revisions (FR-REV-07).",
+        "operationId": "reject_proposal_proposals__proposal_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Proposal"
+      }
+    },
+    "/push-endpoints": {
+      "post": {
+        "description": "Register (or refresh) the caller's own push endpoint.",
+        "operationId": "register_push_endpoint_push_endpoints_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushEndpointBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Push Endpoint"
+      }
+    },
+    "/push-endpoints/{endpoint_id}": {
+      "delete": {
+        "description": "Deactivate the caller's own endpoint; a repeat is not an error.",
+        "operationId": "deactivate_push_endpoint_push_endpoints__endpoint_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "endpoint_id",
+            "required": true,
+            "schema": {
+              "title": "Endpoint Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Deactivate Push Endpoint Push Endpoints  Endpoint Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deactivate Push Endpoint"
+      }
+    },
+    "/tasks": {
+      "get": {
+        "description": "Visible tasks only, in a client-bounded page (FR-UI-02).",
+        "operationId": "list_tasks_tasks_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Tasks Tasks Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Tasks"
+      }
+    },
+    "/tasks/{task_id}": {
+      "get": {
+        "description": "One visible task; hidden or cancelled rows are 404 (FR-TSK-11).",
+        "operationId": "get_task_tasks__task_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task"
+      },
+      "patch": {
+        "description": "Edit a task with an expected version (FR-TSK-12/16, AC-19).",
+        "operationId": "edit_task_tasks__task_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskEditBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit Task"
+      }
+    },
+    "/tasks/{task_id}/agreement": {
+      "post": {
+        "description": "Accept or deny one assignment (FR-TSK-03/05).",
+        "operationId": "set_agreement_tasks__task_id__agreement_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgreementBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Agreement"
+      }
+    },
+    "/tasks/{task_id}/cancel": {
+      "post": {
+        "description": "Cancel a live task and its unfinished assignments (FR-TSK-08).",
+        "operationId": "cancel_task_tasks__task_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Task"
+      }
+    },
+    "/tasks/{task_id}/claims": {
+      "post": {
+        "description": "Claim one place on an OPEN task (FR-TSK-04, AC-08).",
+        "operationId": "claim_task_tasks__task_id__claims_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Claim Task"
+      }
+    },
+    "/tasks/{task_id}/reassign": {
+      "post": {
+        "description": "Add and/or remove assignees (FR-TSK-10/16).",
+        "operationId": "reassign_task_tasks__task_id__reassign_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReassignBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reassign Task"
+      }
+    },
+    "/tasks/{task_id}/status": {
+      "post": {
+        "description": "Advance one accepted assignee's work status (FR-TSK-06/07).",
+        "operationId": "update_status_tasks__task_id__status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Status"
+      }
+    }
+  },
+  "x-asec-error-codes": {
+    "CONFLICT": {
+      "message": "The request conflicts with the current state.",
+      "status": 409
+    },
+    "FORBIDDEN": {
+      "message": "The operation is not permitted.",
+      "status": 403
+    },
+    "IDEMPOTENCY_KEY_REUSED": {
+      "message": "The idempotency key was already used for a different request.",
+      "status": 422
+    },
+    "INTERNAL_ERROR": {
+      "message": "The server could not complete the request.",
+      "status": 500
+    },
+    "INVALID_REQUEST": {
+      "message": "The request is not valid.",
+      "status": 422
+    },
+    "NOT_FOUND": {
+      "message": "The resource was not found.",
+      "status": 404
+    },
+    "RATE_LIMITED": {
+      "message": "Too many requests; try again later.",
+      "status": 429
+    },
+    "UNAUTHENTICATED": {
+      "message": "Authentication is required.",
+      "status": 401
+    }
+  },
+  "x-asec-idempotency-key": {
+    "component": "#/components/parameters/IdempotencyKey",
+    "header": "Idempotency-Key"
+  }
+}

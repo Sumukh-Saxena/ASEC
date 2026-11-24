@@ -433,6 +433,69 @@ def test_admin_backlog_reports_the_oldest_unprocessed_bucket(
     )
 
 
+def test_admin_task_counts_exclude_hidden_and_cancelled_tasks(
+    harness: ApiHarness,
+) -> None:
+    """FR-UI-05 counts only tasks a reader could actually see (Phase 7 contract)."""
+    visible = make_task(harness.database, creator_id=3)
+    assign(harness.database, visible, 4, work_status="COMPLETED")
+    approved = make_task(
+        harness.database, creator_id=3, approval_state="APPROVED"
+    )
+    assign(harness.database, approved, 4, work_status="IN_PROGRESS")
+    for state in ("PENDING", "DENIED"):
+        hidden = make_task(
+            harness.database, creator_id=3, approval_state=state
+        )
+        assign(harness.database, hidden, 4, work_status="IN_PROGRESS")
+    cancelled = make_task(
+        harness.database, creator_id=3, cancellation="CANCELLED"
+    )
+    assign(harness.database, cancelled, 4, work_status="IN_PROGRESS")
+
+    body = harness.call(
+        "GET", "/dashboard/admin", headers=_headers(harness, ADMIN_ROLL)
+    ).json()
+
+    assert body["tasks"]["total"] == 2
+    assert body["tasks"]["by_status"] == {
+        "NOT_STARTED": 0,
+        "IN_PROGRESS": 1,
+        "COMPLETED": 1,
+    }
+    assert sum(item["total"] for item in body["tasks"]["by_vertical"]) == 2
+
+
+def test_admin_backlog_reports_each_group_oldest_age_and_unassigned(
+    harness: ApiHarness,
+) -> None:
+    """NFR-REL-06: the per-group backlog, not only the festival total."""
+    _seed_backlog(harness)
+    _execute(
+        harness.database,
+        "INSERT INTO source_message (id, source, source_message_id, group_id,"
+        " event_timestamp, received_at, content)"
+        " VALUES (99, 'discord', 'm-99', 2, ?, ?, 'unassigned')",
+        (WORLD_AT, WORLD_AT),
+    )
+
+    body = harness.call(
+        "GET", "/admin/backlog", headers=_headers(harness, ADMIN_ROLL)
+    ).json()
+
+    groups = {group["group_id"]: group for group in body["backlog"]["groups"]}
+    assert set(groups) == {1, 2}
+    assert groups[1]["unprocessed_buckets"] == 1
+    assert groups[1]["oldest_unprocessed_anchor"] == WORLD_AT
+    assert groups[1]["age_event_seconds"] == 120
+    assert groups[1]["unassigned_messages"] == 0
+    assert groups[2]["unprocessed_buckets"] == 0
+    assert groups[2]["age_event_seconds"] is None
+    assert groups[2]["unassigned_messages"] == 1
+    assert body["backlog"]["unprocessed_buckets"] == 1
+    assert body["backlog"]["unassigned_messages"] == 1
+
+
 def test_an_empty_backlog_reports_zero_count_and_no_age(
     harness: ApiHarness,
 ) -> None:

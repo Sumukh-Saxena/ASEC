@@ -10,6 +10,7 @@ The domain functions take an injected ``now``; nothing in this file sleeps.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import logging
 import re
@@ -1045,6 +1046,30 @@ def test_the_auth_module_never_reads_the_wall_clock_or_sleeps() -> None:
     assert "datetime.now" not in source
     assert "time.sleep" not in source
     assert "utcnow(" not in source
+
+
+def test_the_otp_hash_comparison_uses_compare_digest() -> None:
+    """Static source guard: the stored OTP hash is compared with ``compare_digest``.
+
+    This is an AST/source assertion, not a timing measurement: it pins the
+    constant-time comparison primitive (NFR-SEC-01) and fails if the call is
+    replaced by ``==`` or any other comparison. A unit test cannot honestly
+    measure timing, so it does not claim to.
+    """
+    source = (Path(__file__).resolve().parents[1] / "backend" / "auth.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "compare_digest"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "hmac"
+    ]
+    assert calls, "backend/auth.py must compare OTP hashes with hmac.compare_digest"
 
 
 def _config(values: dict[str, str]) -> Config:

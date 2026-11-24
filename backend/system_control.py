@@ -15,6 +15,7 @@ Nothing here reads configuration, calls AI services or touches messages.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 
@@ -24,6 +25,8 @@ from backend.authorization import (
     require_active_actor,
 )
 from backend.db.connection import transaction
+
+logger = logging.getLogger("asec.system_control")
 
 #: The two switches; the migration's CHECK accepts exactly these tokens.
 PROCESSING = "PROCESSING"
@@ -113,6 +116,25 @@ def is_delivery_paused(connection: sqlite3.Connection) -> bool:
     return _paused(connection, DELIVERY)
 
 
+def optional_stages_paused(
+    connection: sqlite3.Connection,
+) -> tuple[bool, bool]:
+    """Both switch flags for the worker's optional stages.
+
+    If the switch table cannot be read, the safe reading is "paused": the
+    optional AI and delivery stages are skipped, ingestion and bucket closure
+    still run, and exactly one redacted warning is logged. The worker must not
+    fail a tick because operator state is temporarily unreadable.
+    """
+    try:
+        return is_processing_paused(connection), is_delivery_paused(connection)
+    except sqlite3.Error:
+        logger.warning(
+            "system switch state unreadable; skipping optional stages"
+        )
+        return True, True
+
+
 def _set(
     connection: sqlite3.Connection,
     *,
@@ -126,6 +148,10 @@ def _set(
     _require_admin(
         connection, actor_person_id=actor_person_id, operation=operation
     )
+    if _paused(connection, control) == paused:
+        # The requested value is already the current one: no write, no new
+        # updated_at/updated_by, and no operator event.
+        return read_state(connection)
     with transaction(connection):
         connection.execute(
             "INSERT INTO system_control (name, paused, updated_at, updated_by)"

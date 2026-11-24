@@ -8,6 +8,7 @@ tokens, and writes local files only. The database is opened read-only.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,8 @@ from tests.api_fixtures import (
 PHONE = "+919876543210"
 EMAIL = "synthetic.person@example.com"
 ROLL = "B25CS1044"
+#: The repository root, derived the same way the export guard derives it.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 #: A 64-character synthetic request hash (0025 requires exactly 64 chars).
 SECRET_HASH = "SECRET-HASH-" + "0" * 52
 
@@ -171,6 +174,42 @@ def test_export_refuses_to_overwrite_a_non_empty_destination(
     assert (destination / "keep.txt").read_text(encoding="utf-8") == "operator file"
 
 
+def test_export_refuses_a_destination_inside_the_repository(
+    tmp_path: Path,
+) -> None:
+    """A destination under the repo would mix operator data into source control."""
+    database = _database(tmp_path)
+    destination = REPO_ROOT / "export-must-not-be-created"
+    assert not destination.exists()
+    try:
+        with pytest.raises(ExportError, match="repository"):
+            export_database(
+                database, destination=destination, masked=True, exported_at=NOW
+            )
+        assert not destination.exists()
+    finally:
+        shutil.rmtree(destination, ignore_errors=True)
+
+
+def test_export_refuses_an_existing_manifest_before_any_other_check(
+    tmp_path: Path,
+) -> None:
+    """An existing export is never overwritten; the refusal names the manifest."""
+    database = _database(tmp_path)
+    destination = tmp_path / "existing-export"
+    destination.mkdir()
+    manifest = destination / "manifest.json"
+    manifest.write_text('{"keep": true}', encoding="utf-8")
+
+    with pytest.raises(ExportError, match="manifest"):
+        export_database(
+            database, destination=destination, masked=True, exported_at=NOW
+        )
+
+    assert manifest.read_text(encoding="utf-8") == '{"keep": true}'
+    assert sorted(path.name for path in destination.iterdir()) == ["manifest.json"]
+
+
 def test_export_does_not_write_to_the_source_database(tmp_path: Path) -> None:
     database = _database(tmp_path)
     before = database.stat().st_mtime_ns
@@ -224,14 +263,16 @@ def test_the_export_cli_writes_files_and_prints_counts_only(
     assert (destination / "manifest.json").exists()
     assert PHONE not in out
     assert EMAIL not in out
+    assert "SECRET-TOKEN-HASH" not in out
+    assert "SECRET-PUSH-TOKEN" not in out
     assert "masked=True" in out
 
 
-def test_the_export_cli_accepts_the_unmasked_switch(
-    tmp_path: Path,
+def test_the_export_cli_refuses_unmasked_without_the_acknowledgement(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database = _database(tmp_path)
-    destination = tmp_path / "cli-unmasked"
+    destination = tmp_path / "cli-unmasked-refused"
 
     code = main(
         [
@@ -244,11 +285,42 @@ def test_the_export_cli_accepts_the_unmasked_switch(
         ]
     )
 
+    assert code == 2
+    assert not destination.exists()
+    err = capsys.readouterr().err
+    assert "--i-understand-this-contains-real-data" in err
+
+
+def test_the_export_cli_accepts_unmasked_with_one_acknowledgement_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database = _database(tmp_path)
+    destination = tmp_path / "cli-unmasked"
+
+    code = main(
+        [
+            "export",
+            "--db",
+            str(database),
+            "--destination",
+            str(destination),
+            "--unmasked",
+            "--i-understand-this-contains-real-data",
+        ]
+    )
+
     assert code == 0
     assert json.loads(
         (destination / "manifest.json").read_text(encoding="utf-8")
     )["masked"] is False
     assert PHONE in _all_text(destination)
+    captured = capsys.readouterr()
+    warnings = [line for line in captured.err.splitlines() if line.strip()]
+    assert len(warnings) == 1
+    assert "unmasked" in warnings[0].lower()
+    assert PHONE not in captured.err
+    assert EMAIL not in captured.err
+    assert "SECRET-TOKEN-HASH" not in captured.out + captured.err
 
 
 @pytest.mark.parametrize(

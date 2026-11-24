@@ -35,6 +35,10 @@ from backend.masking import mask_pii
 MANIFEST_FORMAT = "asec-export/1"
 MANIFEST_NAME = "manifest.json"
 
+#: The repository root (``backend/export.py`` -> ``backend`` -> repo root). An
+#: operator export must never be written inside source control.
+_REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+
 
 class ExportError(Exception):
     """The export cannot run against this source or destination."""
@@ -318,11 +322,26 @@ def _open_read_only(database: Path) -> sqlite3.Connection:
 
 
 def _prepare_destination(destination: Path) -> Path:
-    """Create an absent destination; refuse a non-empty one."""
+    """Create an absent destination; refuse an unsafe or occupied one.
+
+    The destination must live outside the repository, must not already hold an
+    export manifest (an existing operator export is never overwritten), and
+    must be absent or empty. Every refusal happens before anything is created.
+    """
     path = Path(destination)
+    resolved = path.resolve()
+    if resolved == _REPOSITORY_ROOT or resolved.is_relative_to(_REPOSITORY_ROOT):
+        raise ExportError(
+            f"destination must be outside the repository: {path}"
+        )
     if path.exists():
         if not path.is_dir():
             raise ExportError(f"destination is not a directory: {path}")
+        if (path / MANIFEST_NAME).exists():
+            raise ExportError(
+                f"destination already contains {MANIFEST_NAME}; refusing to"
+                f" overwrite an existing export: {path}"
+            )
         if any(path.iterdir()):
             raise ExportError(f"destination is not empty: {path}")
         return path

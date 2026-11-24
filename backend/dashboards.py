@@ -564,14 +564,19 @@ def _task_counts(
     """
     rows = connection.execute(
         "SELECT id, COALESCE(responsible_vertical_id, source_vertical_id)"
-        " AS vertical_id FROM task ORDER BY id"
+        " AS vertical_id FROM task"
+        " WHERE approval_state IN ('NOT_REQUIRED', 'APPROVED')"
+        " AND cancellation = 'ACTIVE'"
+        " ORDER BY id"
     ).fetchall()
     statuses: dict[int, set[str]] = {int(row["id"]): set() for row in rows}
     for row in connection.execute(
         "SELECT task_id, work_status FROM task_assignee"
         " WHERE cancelled = 0 AND agreement = 'ACCEPTED'"
     ).fetchall():
-        statuses[int(row["task_id"])].add(str(row["work_status"]))
+        task_id = int(row["task_id"])
+        if task_id in statuses:
+            statuses[task_id].add(str(row["work_status"]))
 
     def derive(task_id: int) -> str:
         work = statuses[task_id]

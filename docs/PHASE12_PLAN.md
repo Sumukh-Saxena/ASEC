@@ -798,3 +798,135 @@ clean, no secret in any response/log.
   progress; Push announcements; View processing records, model results, configuration;
   Change roster data.
 - **AC-20** A volunteer calls the assign API directly → Rejected and logged.
+
+---
+
+## 15. Session E closeout: deviations, assertion changes and carry-forwards
+
+Added at the end of Phase 12 Session E (2026-11-24). The section is numbered 15
+as requested by the Session E instruction; the last design section in this plan
+is 13.
+
+### 15.1 What Session E changed
+
+- **E0** — export guards (repository, existing manifest, non-empty destination,
+  two-flag unmasked acknowledgement and one warning), pause semantics
+  (PROCESSING skips only model calls; ingestion, clock advance and bucket
+  closure continue; DELIVERY stages and resumes exactly once), the unreadable
+  switch fallback, the same-value switch no-op, and the Admin task counts
+  (hidden `PENDING`/`DENIED` and cancelled tasks excluded).
+- **E1** — the 21-mutation battery, every mutation red, every touched file
+  restored byte-for-byte with an equal SHA-256, plus one new static guard for
+  `hmac.compare_digest`.
+- **E2** — the additive `python -m backend openapi [--check]` developer command,
+  the generated `docs/api/openapi.json`, its README and five tests.
+- **E3** — the read-only audits, the definition-of-done battery, this section and
+  one status line in `docs/PLANNING_PROGRESS.md`.
+
+### 15.2 Session D assertion changes (old → new, one-line reason)
+
+These are the Session D test changes not individually spelled out in the C6–C9
+progress lines. No requirement was relaxed; each change follows an owner
+decision or a new migration.
+
+| File | Old assertion | New assertion | Reason |
+|---|---|---|---|
+| `tests/test_api_authorization_matrix.py` | Admin `PUSH_ANNOUNCEMENT` was the `NEEDS-OWNER` branch: `cell.kind == NO`, `cell.needs_owner`, then `response.status == 200` for an announcement acceptance. | `_announcement_refuse` expects `403`, a denial recorded against `PUSH_ANNOUNCEMENT` with `subject_type=PROPOSAL` and the proposal left `PENDING`; the flagged set is `set()`. | Owner decision A resolved the cell strictly: Admin may not accept an ANNOUNCEMENT proposal. |
+| `tests/test_api_dashboards.py` | `test_admin_dashboard_has_backlog_attempts_denials_evaluation_and_config_names` asserted backlog, attempts, denials, evaluation and config payloads. | `test_admin_dashboard_is_a_festival_glance_without_internal_ledgers` asserts the festival counts and that those internal ledgers are absent; the `count`/`query` imports were removed. | Owner decision B/D1 slimmed the Admin payload to a festival glance. |
+| `tests/test_api_routes.py` | The expected route table had no system-control routes. | The table adds `GET /admin/system`, `POST /admin/system/pause` and `POST /admin/system/resume`. | Owner decision C (D2) added the two pause switches and their routes. |
+| `tests/test_config.py` | No dashboard list-limit settings. | New tests pin the default 50, a configured 5 and a rejected 0 for `API_DASHBOARD_LIST_LIMIT`. | Owner decision E (D4) added the list cap. |
+| Ten migration test files (`test_db_migrations.py`, `test_migrations_*.py`, `test_push_endpoints.py`) | `list(range(1, 26))` and pre-window lists ending at 25. | `list(range(1, 27))` and pre-window lists ending `..., 25, 26`. | Migration 0026 adds the system-control table. |
+| New files | — | `tests/test_export.py`, `tests/test_api_system.py`, `tests/test_system_control.py`, `tests/test_migrations_system_control.py`. | D2/D3 added exports, pause switches and their schema. |
+
+### 15.3 Session E test and behaviour changes
+
+- The old `test_a_paused_processing_switch_stops_the_pipeline_tick` asserted the
+  worker returned before the clock and bucketing (`groups == ()`, `assigned == 0`,
+  no bucket, no clock row). It was replaced by
+  `test_a_processing_pause_skips_model_calls_but_still_closes_buckets` and
+  `test_resuming_processing_processes_the_closed_backlog_in_order`, which assert
+  that a PROCESSING pause skips only the relevance/proposal calls while
+  ingestion, the clock and bucket closure continue, and that resume processes the
+  closed backlog losslessly in order. The change follows the owner's pause
+  semantics; it does not weaken the no-model-call guarantee.
+- The old `test_the_export_cli_accepts_the_unmasked_switch` was replaced by
+  `test_the_export_cli_refuses_unmasked_without_the_acknowledgement` and
+  `test_the_export_cli_accepts_unmasked_with_one_acknowledgement_warning`, which
+  pin the two-flag acknowledgement and exactly one stderr warning.
+- Added E0 tests: repository destination, existing manifest, non-empty
+  destination, Admin hidden/cancelled counts, per-group backlog detail, delivery
+  pause and exactly-once resume, unreadable switch (one redacted warning, no
+  raise), same-value no-op, already-resumed no-op.
+- Added the static `test_the_otp_hash_comparison_uses_compare_digest`. It parses
+  `backend/auth.py` and asserts an `hmac.compare_digest` call. It is a source/AST
+  guard, **not** a timing measurement; a unit test cannot honestly measure
+  constant-time behaviour.
+
+### 15.4 Mutation battery (E1)
+
+Twenty-one mutations were applied one at a time, each with a targeted test run.
+Twenty were red on the first pass. M9 (AH/Head evaluation export) initially
+survived because the first mutation also emptied `matrix_operations`, and
+`test_every_domain_route_is_bounded_by_its_matrix_cells` skips an operation with
+no matrix row. The mutation was corrected to keep `matrix_operations` and widen
+`allowed_roles` to `REVIEW_ROLES`; the existing bounding test then failed naming
+`AH` and `Head`. Every mutation was restored by writing the saved original bytes
+back, and every touched file's SHA-256 equalled its pre-mutation value
+(`restore_ok=True` for all 21). No destructive git command was used.
+
+### 15.5 OpenAPI (E2)
+
+`python -m backend openapi` builds the real app with `Config({})`, a fixed clock
+and a connection factory that raises if called; it opens no database, makes no
+network call, reads no secret and binds no port. The document has 35 paths and
+36 operations, equal to `ROUTE_OPERATIONS`. It is rendered with sorted keys,
+two-space indent, LF and one trailing newline. `--check` exits 1 on a missing or
+drifted document without writing; bad arguments exit 2.
+
+**Carry-forward (cosmetic):** FastAPI's default `HTTPValidationError` and
+`ValidationError` 422 models remain in `components.schemas`. The app's actual
+422 body is the fixed `ErrorResponse`; the default models describe the
+framework's validation detail, which the handlers replace. Removing them would
+mean editing the generated schema by hand, so they are documented rather than
+silently deleted.
+
+### 15.6 Deviations and carry-forwards
+
+- No commit, staging or push was performed in this session; the owner commits at
+  a green checkpoint.
+- This Python's `Path.read_text` has no `newline` argument, so the `--check`
+  reader and the tests use `open(..., newline="")`.
+- The C10 full suite was launched with the doubled `-q` (the `addopts` `-q` plus
+  the CLI `-q`), which suppressed the summary line. Its count was verified by
+  `pytest --co` (2016 collected) and the 2016 progress dots; exit 0. C11 and C12
+  used `-o addopts="" -q` and printed their summaries (2017 and 2022 passed).
+- Test counts: baseline 2007; C10 2016; C11 2017; C12 2022.
+- The Session D assertion changes are listed in 15.2; no test was weakened,
+  skipped or deleted, apart from the documented `importorskip("fastapi")`.
+- Phase 12 is **not** verified live: no real Discord connection, real OTP
+  delivery or production database was used. The evidence is the offline suite,
+  the mutation battery and the audits.
+- `hmac.compare_digest` timing is not measured; the guard is static (15.3).
+- Export remains a manual operator command; no scheduler, queue or new
+  dependency was added.
+
+### 15.7 Final definition-of-done battery (2026-11-24)
+
+- `.venv\Scripts\python.exe -m pytest -o addopts="" -q` → **2022 passed in
+  627.94s**.
+- `.venv\Scripts\python.exe -m ruff check .` → **All checks passed!**
+- `.venv\Scripts\python.exe -m mypy` → **Success: no issues found in 44 source
+  files**.
+- `.venv\Scripts\python.exe -m backend --version` → **0.0.1**.
+- Targeted: `tests/test_auth.py tests/test_migrations_auth.py` → 44 passed;
+  `tests/test_api_authorization_matrix.py tests/test_api_routes.py` → 127
+  passed; `tests/test_api_visibility.py tests/test_api_dashboards.py
+  tests/test_api_errors.py tests/test_api_server_smoke.py` → 51 passed;
+  `tests/test_export.py tests/test_system_control.py tests/test_openapi.py` → 31
+  passed.
+- Fresh temp DB: applied `[1..26]`, re-apply `[]`, `PRAGMA foreign_key_check`
+  `[]`, `PRAGMA integrity_check` `ok`; tables `['announcement',
+  'auth_session', 'idempotency_key', 'system_control']`.
+- `git diff --check` silent; `git status --short` shows only the intended
+  modified files and the two intended untracked paths (`docs/api/`,
+  `tests/test_openapi.py`); nothing staged.
