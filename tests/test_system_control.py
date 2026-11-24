@@ -19,6 +19,7 @@ from backend.authorization import AuthorizationError
 from backend.bucketing import BucketParams
 from backend.db.connection import connect
 from backend.db.migrations import apply_migrations
+from backend.ingest import MessageEvent
 from backend.notification_delivery import register_endpoint, run_delivery_tick
 from backend.relevance import MessageDecision, RelevanceResponse
 from backend.system_control import (
@@ -101,6 +102,40 @@ class _EmptySource:
 
     def fetch_latest_page(self, *, channel_id: str) -> tuple[()]:
         return ()
+
+
+class _RecordingSource:
+    """Return one scripted page per call; never touches the network."""
+
+    def __init__(self, events: tuple[MessageEvent, ...] = ()) -> None:
+        self.events = events
+        self.calls: list[tuple[str, str | None]] = []
+
+    def fetch_messages(
+        self, *, channel_id: str, after: str | None
+    ) -> tuple[MessageEvent, ...]:
+        self.calls.append((channel_id, after))
+        return tuple(self.events)
+
+    def fetch_reactions(
+        self, *, channel_id: str, message_id: str
+    ) -> tuple[()]:
+        return ()
+
+    def fetch_latest_page(self, *, channel_id: str) -> tuple[()]:
+        return ()
+
+
+def _live_event(message_id: str) -> MessageEvent:
+    """One old synthetic message so the live poll's clock settles it."""
+    return MessageEvent(
+        source="discord",
+        source_message_id=message_id,
+        discord_channel_id="chan-1",
+        event_timestamp="2026-11-18T09:00:00+00:00",
+        received_at="2026-11-18T09:00:00+00:00",
+        content=f"synthetic content {message_id}",
+    )
 
 
 class _FakePush:
@@ -367,6 +402,106 @@ def test_an_unreadable_switch_state_skips_optional_stages_and_logs_once(
     message = records[0].getMessage()
     assert "unreadable" in message.lower()
     assert "content" not in message
+
+
+def test_a_live_tick_reads_the_processing_pause_each_tick(
+    conn: sqlite3.Connection,
+) -> None:
+    """Ingestion keeps storing while paused; resume processes the live backlog."""
+    conn.execute(
+        "INSERT INTO source_group (id, discord_channel_id) VALUES (1, 'chan-1')"
+    )
+    source = _RecordingSource((_live_event("m-1"), _live_event("m-2")))
+    pause(conn, control=PROCESSING, actor_person_id=6, now=_NOW)
+    classifier = _ForbiddenClassifier()
+    generator = _ForbiddenGenerator()
+
+    paused = run_live_tick(
+        conn,
+        source=source,
+        now=lambda: _NOW,
+        classifier=classifier,
+        generator=generator,
+    )
+
+    assert paused.polls[0].stored == 2
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM source_message"
+    ).fetchone()["n"] == 2
+    assert classifier.calls == 0
+    assert generator.calls == 0
+    assert paused.tick.relevance is None
+    assert paused.tick.proposals is None
+    states = [
+        str(row["processing_state"])
+        for row in conn.execute("SELECT processing_state FROM bucket").fetchall()
+    ]
+    assert states == ["OPEN"]
+
+    resume(conn, control=PROCESSING, actor_person_id=6, now=_NOW)
+    resumed_classifier = _RecordingClassifier()
+    resumed = run_live_tick(
+        conn,
+        source=_EmptySource(),
+        now=lambda: _NOW,
+        classifier=resumed_classifier,
+    )
+
+    assert resumed.tick.relevance is not None
+    assert resumed_classifier.bucket_ids == [1]
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM relevance_decision"
+    ).fetchone()["n"] == 2
+    states = [
+        str(row["processing_state"])
+        for row in conn.execute("SELECT processing_state FROM bucket").fetchall()
+    ]
+    assert states == ["PROCESSED"]
+
+
+def test_a_live_tick_reads_the_delivery_pause_each_tick(
+    conn: sqlite3.Connection,
+) -> None:
+    """A paused delivery stages rows; resume sends each exactly once."""
+    seed_message_chain(conn)
+    conn.execute(
+        "UPDATE bucket SET parameters_used = ? WHERE id = 1",
+        (BucketParams().as_json(),),
+    )
+    add_proposal(conn, 1, description="clip the wires")
+    add_task(conn, 1, proposal_id=1, description="clip the wires")
+    notification_id = add_notification(
+        conn,
+        event_type="TASK_ASSIGNED",
+        recipient_person_id=3,
+        dedupe_key="live-delivery-pause",
+        created_at=_NOW,
+        task_id=1,
+    )
+    register_endpoint(conn, person_id=3, token="fake-token-3", now=_NOW)
+    push = _FakePush()
+
+    def delivery() -> object:
+        return run_delivery_tick(conn, push=push, now=_NOW)
+
+    pause(conn, control=DELIVERY, actor_person_id=6, now=_NOW)
+    run_live_tick(
+        conn, source=_EmptySource(), now=lambda: _NOW, delivery_tick=delivery
+    )
+    assert push.calls == []
+    assert _delivery_state(conn, notification_id) == "PENDING"
+
+    resume(conn, control=DELIVERY, actor_person_id=6, now=_NOW)
+    run_live_tick(
+        conn, source=_EmptySource(), now=lambda: _NOW, delivery_tick=delivery
+    )
+    assert len(push.calls) == 1
+    assert _delivery_state(conn, notification_id) == "SENT"
+
+    run_live_tick(
+        conn, source=_EmptySource(), now=lambda: _NOW, delivery_tick=delivery
+    )
+    assert len(push.calls) == 1
 
 
 def test_setting_a_switch_to_its_current_value_writes_nothing(
