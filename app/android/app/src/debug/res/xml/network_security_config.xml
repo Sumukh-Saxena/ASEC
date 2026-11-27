@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only cleartext allow-list.
+
+  Android 9+ blocks cleartext HTTP by default. The base config keeps that
+  default for every destination. Only the single development host below is
+  allowed to use cleartext, and only in a debug build.
+
+  10.0.2.2 is the Android emulator's alias for the host machine. If the mock
+  server runs on the owner's LAN, replace the domain value with that one LAN
+  address (for example 192.168.1.20) and point the local app config at it.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>
