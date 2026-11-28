@@ -71,6 +71,15 @@ from backend.roster import (
     seed_fake,
     validate_roster,
 )
+from backend.verticals import (
+    VerticalError,
+    apply_verticals,
+    read_existing_verticals,
+    validate_verticals,
+)
+from backend.verticals import (
+    format_preview as format_vertical_preview,
+)
 from backend.worker import LiveTickResult, run_live_tick
 
 logger = logging.getLogger("asec.cli")
@@ -106,6 +115,11 @@ _ROSTER_CHECK_USAGE = (
 
 _ROSTER_LOAD_USAGE = (
     "usage: python -m backend roster-load <csv> --db <database path>"
+    " [--commit]"
+)
+
+_VERTICAL_LOAD_USAGE = (
+    "usage: python -m backend vertical-load <csv> --db <database path>"
     " [--commit]"
 )
 
@@ -956,6 +970,93 @@ def _run_roster_load(args: Sequence[str], *, config: Config) -> int:
             connection.close()
 
 
+def _parse_vertical_load_args(
+    args: Sequence[str],
+) -> tuple[str, str, bool] | None:
+    csv_path: str | None = None
+    database: str | None = None
+    commit = False
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if option == "--db":
+            if index + 1 >= len(args):
+                return None
+            value = args[index + 1].strip()
+            if value == "":
+                return None
+            database = value
+            index += 2
+            continue
+        if option == "--commit":
+            commit = True
+            index += 1
+            continue
+        if option.startswith("-") or csv_path is not None:
+            return None
+        csv_path = option
+        index += 1
+    if csv_path is None or database is None:
+        return None
+    return csv_path, database, commit
+
+
+def _run_vertical_load(args: Sequence[str], *, config: Config) -> int:
+    """Validate an ``id,name`` CSV; write only with ``--commit``."""
+    parsed = _parse_vertical_load_args(args)
+    if parsed is None:
+        print(_VERTICAL_LOAD_USAGE, file=sys.stderr)
+        return 2
+    csv_arg, database_arg, commit = parsed
+    try:
+        csv_path = require_outside_repository(csv_arg, what="vertical file")
+        database = require_outside_repository(database_arg, what="database")
+        sqlite_settings = load_sqlite_settings(config)
+    except (RosterError, ConfigError) as error:
+        print(f"vertical-load failed: {error}", file=sys.stderr)
+        return 2
+
+    connection: sqlite3.Connection | None = None
+    try:
+        if commit:
+            connection = connect(
+                database, busy_timeout_ms=sqlite_settings.busy_timeout_ms
+            )
+            apply_migrations(connection)
+        else:
+            connection = open_read_only(database)
+        existing_ids, existing_names = read_existing_verticals(connection)
+        report = validate_verticals(
+            csv_path,
+            existing_ids=existing_ids,
+            existing_names=existing_names,
+        )
+        print(format_vertical_preview(report))
+        for issue in report.issues:
+            print(f"row {issue.row}: {issue.code}")
+        if not report.ok:
+            return 2
+        if not commit:
+            print("mode=dry-run loaded=0")
+            return 0
+        loaded = apply_verticals(connection, report.rows)
+        print(f"mode=committed loaded={loaded}")
+        return 0
+    except (VerticalError, RosterError) as error:
+        print(f"vertical-load failed: {error}", file=sys.stderr)
+        return 2
+    except sqlite3.Error:
+        print(
+            "vertical-load failed: the database rejected the load;"
+            " nothing was written",
+            file=sys.stderr,
+        )
+        return 2
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def _parse_seed_fake_args(
     args: Sequence[str],
 ) -> tuple[str, int] | None:
@@ -1057,6 +1158,10 @@ def main(
         return _run_roster_load(
             args[1:], config=load_config() if config is None else config
         )
+    if args and args[0] == "vertical-load":
+        return _run_vertical_load(
+            args[1:], config=load_config() if config is None else config
+        )
     if args and args[0] == "seed-fake":
         return _run_seed_fake(
             args[1:], config=load_config() if config is None else config
@@ -1075,8 +1180,8 @@ def main(
         return _run_openapi(args[1:])
     print(
         "ASEC backend (Phase 0). Use --version, 'discord-smoke', 'run-live',"
-        " 'import-groups', 'roster-check', 'roster-load', 'seed-fake',"
-        " 'serve-api', 'export' or 'openapi'.",
+        " 'import-groups', 'roster-check', 'roster-load', 'vertical-load',"
+        " 'seed-fake', 'serve-api', 'export' or 'openapi'.",
         file=sys.stderr,
     )
     return 2

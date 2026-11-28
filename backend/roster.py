@@ -119,6 +119,7 @@ class RosterPreview:
 
     role_counts: tuple[tuple[str, int], ...]
     vertical_counts: tuple[tuple[int, int], ...]
+    role_pairs: tuple[tuple[str, str, int], ...]
     without_manager: int
     max_depth: int
     issue_counts: tuple[tuple[str, int], ...]
@@ -144,6 +145,14 @@ class RosterReport:
             for vertical_id in row.vertical_ids
         )
         issue_counts = Counter(issue.code for issue in self.issues)
+        by_roll: dict[str, RosterRow] = {}
+        for row in self.rows:
+            by_roll.setdefault(row.roll_number, row)
+        pair_counts = Counter(
+            (by_roll[row.reports_to_roll_number].role, row.role)
+            for row in self.rows
+            if row.reports_to_roll_number in by_roll
+        )
         return RosterPreview(
             role_counts=tuple(
                 (role, role_counts[role])
@@ -151,6 +160,11 @@ class RosterReport:
                 if role_counts[role]
             ),
             vertical_counts=tuple(sorted(vertical_counts.items())),
+            role_pairs=tuple(
+                (manager_role, report_role, count)
+                for (manager_role, report_role), count
+                in sorted(pair_counts.items())
+            ),
             without_manager=sum(
                 1
                 for row in self.rows
@@ -444,6 +458,10 @@ def format_preview(report: RosterReport) -> str:
         f"{vertical_id}={count}"
         for vertical_id, count in preview.vertical_counts
     ) or "none"
+    role_pairs = " ".join(
+        f"{manager_role}->{report_role}={count}"
+        for manager_role, report_role, count in preview.role_pairs
+    ) or "none"
     issue_counts = " ".join(
         f"{code}={count}" for code, count in preview.issue_counts
     ) or "none"
@@ -452,6 +470,7 @@ def format_preview(report: RosterReport) -> str:
             f"rows={len(report.rows)} issues={len(report.issues)}",
             f"role {roles}",
             f"vertical {verticals}",
+            f"role_pairs {role_pairs}",
             f"without_manager={preview.without_manager}",
             f"max_depth={preview.max_depth}",
             f"issue {issue_counts}",

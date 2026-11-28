@@ -233,6 +233,50 @@ def test_roster_check_prints_counts_only(
     assert _count_people(database) == 0
 
 
+def test_roster_check_previews_manager_role_to_report_role_pairs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The pair counts are shown for the owner to review; they are not a rule."""
+    database = _database(tmp_path)
+    csv_path = _csv(tmp_path, *VALID_ROWS)
+
+    code, out, err = _run(
+        capsys, ["roster-check", str(csv_path), "--db", str(database)]
+    )
+
+    assert code == 0
+    assert err == ""
+    assert "role_pairs" in out
+    assert "Admin->Head=1" in out
+    assert "Head->AH=1" in out
+    assert "AH->Volunteer=2" in out
+    _assert_no_personal(out + err)
+
+
+def test_an_unusual_role_pair_is_shown_but_never_rejected(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No role chain is enforced: the SRS does not define one (ROSTER.md §7)."""
+    database = _database(tmp_path)
+    csv_path = _csv(
+        tmp_path,
+        "FAKE-VOL-01,Fake Volunteer 01,900000000000000004,"
+        "+15550100004,Volunteer,,1,1",
+        "FAKE-ADMIN-01,Fake Admin,900000000000000001,"
+        "+15550100001,Admin,FAKE-VOL-01,1,1",
+    )
+
+    code, out, err = _run(
+        capsys, ["roster-check", str(csv_path), "--db", str(database)]
+    )
+
+    assert code == 0
+    assert "issues=0" in out
+    assert "Volunteer->Admin=1" in out
+    assert "ROLE_CHAIN" not in out + err
+    _assert_no_personal(out + err)
+
+
 # --- every validation code --------------------------------------------------
 
 
