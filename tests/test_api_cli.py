@@ -215,6 +215,38 @@ def test_without_a_bot_token_sign_in_still_answers_and_records_the_gap(
     assert reasons == ["SENDER_UNCONFIGURED"]
 
 
+def test_dev_otp_serves_a_fake_roster_and_prints_the_code(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--dev-otp`` composes the console sender for local sign-in.
+
+    The sender is only wired when the flag is given, and it prints the code to
+    the server console rather than returning it in the response.
+    """
+    database = tmp_path / "dev.db"
+    assert main(["seed-fake", "--db", str(database)], config=Config({})) == 0
+    seeded = capsys.readouterr().out
+    admin_roll = next(
+        line.split(": ", 1)[1].split(",", 1)[0]
+        for line in seeded.splitlines()
+        if line.startswith("Admin: ")
+    )
+
+    recorder = _Recorder()
+    code, out, _err = _run(
+        capsys, ["serve-api", "--dev-otp"], _config(database), recorder
+    )
+
+    assert code == 0
+    assert "serving API on 127.0.0.1:8000" in out
+    assert len(recorder.calls) == 1
+    app = recorder.calls[0][0]
+    response = call(app, "POST", "/auth/otp", json_body={"roll_number": admin_roll})
+    assert response.status == 202
+    assert response.json() == {"status": "accepted"}
+    assert f"{admin_roll} -> " in capsys.readouterr().out
+
+
 def test_version_still_prints_the_version(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--version"]) == 0
     assert __version__ in capsys.readouterr().out

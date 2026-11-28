@@ -36,6 +36,7 @@ from backend.config import (
     load_api_settings,
     load_config,
     load_discord_settings,
+    load_production_flag,
     load_sqlite_settings,
     load_worker_settings,
 )
@@ -52,7 +53,24 @@ from backend.export import ExportError, export_database
 from backend.group_import import GroupImportError, import_groups_from_file
 from backend.ingest import ingest_message
 from backend.logging_setup import setup_logging
-from backend.notification_delivery import OtpSender
+from backend.notification_delivery import (
+    ConsoleOtpSender,
+    OtpSender,
+    OtpSenderNotConfigured,
+)
+from backend.roster import (
+    DEFAULT_FAKE_PEOPLE,
+    VALID_ROLES,
+    RosterError,
+    RosterReport,
+    apply_roster,
+    format_preview,
+    open_read_only,
+    read_vertical_ids,
+    require_outside_repository,
+    seed_fake,
+    validate_roster,
+)
 from backend.worker import LiveTickResult, run_live_tick
 
 logger = logging.getLogger("asec.cli")
@@ -79,6 +97,21 @@ _IMPORT_GROUPS_USAGE = (
 
 _SERVE_API_USAGE = (
     "usage: python -m backend serve-api [--host <host>] [--port <port>]"
+    " [--dev-otp]"
+)
+
+_ROSTER_CHECK_USAGE = (
+    "usage: python -m backend roster-check <csv> [--db <database path>]"
+)
+
+_ROSTER_LOAD_USAGE = (
+    "usage: python -m backend roster-load <csv> --db <database path>"
+    " [--commit]"
+)
+
+_SEED_FAKE_USAGE = (
+    "usage: python -m backend seed-fake --db <database path>"
+    " [--people <count>]"
 )
 
 _EXPORT_USAGE = (
@@ -545,9 +578,10 @@ def _utc_now() -> str:
 
 def _parse_serve_api_args(
     args: Sequence[str],
-) -> tuple[str | None, int | None] | None:
+) -> tuple[str | None, int | None, bool] | None:
     host: str | None = None
     port: int | None = None
+    dev_otp = False
     index = 0
     while index < len(args):
         option = args[index]
@@ -569,8 +603,12 @@ def _parse_serve_api_args(
                 port = parsed
             index += 2
             continue
+        if option == "--dev-otp":
+            dev_otp = True
+            index += 1
+            continue
         return None
-    return host, port
+    return host, port, dev_otp
 
 
 def _configured_otp_sender(config: Config) -> OtpSender | None:
@@ -594,6 +632,30 @@ def _configured_otp_sender(config: Config) -> OtpSender | None:
     return DiscordDmOtpSender(config=config, transport=UrllibTransport())
 
 
+def _console_otp_sender(
+    database: str, *, config: Config, busy_timeout_ms: int
+) -> ConsoleOtpSender:
+    """Build the console sender only for a roster whose Discord ids are fake.
+
+    Every person with a Discord id is passed, active or not, so a single real id
+    refuses construction. The production switch is checked by the sender.
+    """
+    connection = connect(database, busy_timeout_ms=busy_timeout_ms)
+    try:
+        people = [
+            (str(row["roll_number"]), str(row["discord_user_id"]))
+            for row in connection.execute(
+                "SELECT roll_number, discord_user_id FROM person"
+                " WHERE discord_user_id IS NOT NULL ORDER BY id"
+            ).fetchall()
+        ]
+    finally:
+        connection.close()
+    return ConsoleOtpSender(
+        production=load_production_flag(config), people=people
+    )
+
+
 def _serve_with_uvicorn(app: object, host: str, port: int) -> None:
     from backend.api.server import run_server
 
@@ -611,7 +673,7 @@ def _run_serve_api(
     if parsed is None:
         print(_SERVE_API_USAGE, file=sys.stderr)
         return 2
-    host_arg, port_arg = parsed
+    host_arg, port_arg, dev_otp = parsed
     try:
         setup_logging(config)
         api_settings = load_api_settings(config)
@@ -649,6 +711,22 @@ def _run_serve_api(
             database, busy_timeout_ms=sqlite_settings.busy_timeout_ms
         )
 
+    if dev_otp:
+        try:
+            sender: OtpSender | None = _console_otp_sender(
+                database,
+                config=config,
+                busy_timeout_ms=sqlite_settings.busy_timeout_ms,
+            )
+        except OtpSenderNotConfigured as error:
+            print(f"serve-api --dev-otp refused: {error}", file=sys.stderr)
+            return 2
+        except (ConfigError, sqlite3.Error) as error:
+            print(f"serve-api --dev-otp refused: {error}", file=sys.stderr)
+            return 2
+    else:
+        sender = _configured_otp_sender(config)
+
     try:
         from backend.api import ApiConfigurationError, create_app
 
@@ -656,7 +734,7 @@ def _run_serve_api(
             connection_factory=open_connection,
             now=_utc_now,
             config=config,
-            otp_sender=_configured_otp_sender(config),
+            otp_sender=sender,
         )
     except (ConfigError, ApiConfigurationError) as error:
         print(str(error), file=sys.stderr)
@@ -736,6 +814,212 @@ def _run_export(args: Sequence[str], *, now: str) -> int:
     return 0
 
 
+def _parse_roster_check_args(
+    args: Sequence[str],
+) -> tuple[str, str | None] | None:
+    csv_path: str | None = None
+    database: str | None = None
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if option == "--db":
+            if index + 1 >= len(args):
+                return None
+            value = args[index + 1].strip()
+            if value == "":
+                return None
+            database = value
+            index += 2
+            continue
+        if option.startswith("-") or csv_path is not None:
+            return None
+        csv_path = option
+        index += 1
+    if csv_path is None:
+        return None
+    return csv_path, database
+
+
+def _print_roster_report(report: RosterReport) -> None:
+    """Print counts and one row/code line per issue; never a roster value."""
+    print(format_preview(report))
+    for issue in report.issues:
+        print(f"row {issue.row}: {issue.code}")
+
+
+def _run_roster_check(args: Sequence[str]) -> int:
+    parsed = _parse_roster_check_args(args)
+    if parsed is None:
+        print(_ROSTER_CHECK_USAGE, file=sys.stderr)
+        return 2
+    csv_arg, database_arg = parsed
+    try:
+        csv_path = require_outside_repository(csv_arg, what="roster file")
+        known = None
+        if database_arg is not None:
+            connection = open_read_only(database_arg)
+            try:
+                known = read_vertical_ids(connection)
+            finally:
+                connection.close()
+        report = validate_roster(csv_path, known_vertical_ids=known)
+    except RosterError as error:
+        print(f"roster-check failed: {error}", file=sys.stderr)
+        return 2
+    except sqlite3.Error:
+        print(
+            "roster-check failed: the database could not be read",
+            file=sys.stderr,
+        )
+        return 2
+    _print_roster_report(report)
+    return 0 if report.ok else 2
+
+
+def _parse_roster_load_args(
+    args: Sequence[str],
+) -> tuple[str, str, bool] | None:
+    csv_path: str | None = None
+    database: str | None = None
+    commit = False
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if option == "--db":
+            if index + 1 >= len(args):
+                return None
+            value = args[index + 1].strip()
+            if value == "":
+                return None
+            database = value
+            index += 2
+            continue
+        if option == "--commit":
+            commit = True
+            index += 1
+            continue
+        if option.startswith("-") or csv_path is not None:
+            return None
+        csv_path = option
+        index += 1
+    if csv_path is None or database is None:
+        return None
+    return csv_path, database, commit
+
+
+def _run_roster_load(args: Sequence[str], *, config: Config) -> int:
+    parsed = _parse_roster_load_args(args)
+    if parsed is None:
+        print(_ROSTER_LOAD_USAGE, file=sys.stderr)
+        return 2
+    csv_arg, database_arg, commit = parsed
+    try:
+        csv_path = require_outside_repository(csv_arg, what="roster file")
+        database = require_outside_repository(database_arg, what="database")
+        sqlite_settings = load_sqlite_settings(config)
+    except (RosterError, ConfigError) as error:
+        print(f"roster-load failed: {error}", file=sys.stderr)
+        return 2
+
+    connection: sqlite3.Connection | None = None
+    try:
+        if commit:
+            connection = connect(
+                database, busy_timeout_ms=sqlite_settings.busy_timeout_ms
+            )
+            apply_migrations(connection)
+        else:
+            connection = open_read_only(database)
+        known = read_vertical_ids(connection)
+        report = validate_roster(csv_path, known_vertical_ids=known)
+        _print_roster_report(report)
+        if not report.ok:
+            return 2
+        if not commit:
+            print("mode=dry-run loaded=0")
+            return 0
+        loaded = apply_roster(connection, report.rows)
+        print(f"mode=committed loaded={loaded}")
+        return 0
+    except RosterError as error:
+        print(f"roster-load failed: {error}", file=sys.stderr)
+        return 2
+    except sqlite3.Error:
+        print(
+            "roster-load failed: the database rejected the load;"
+            " nothing was written",
+            file=sys.stderr,
+        )
+        return 2
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _parse_seed_fake_args(
+    args: Sequence[str],
+) -> tuple[str, int] | None:
+    database: str | None = None
+    people = DEFAULT_FAKE_PEOPLE
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if option in ("--db", "--people"):
+            if index + 1 >= len(args):
+                return None
+            value = args[index + 1].strip()
+            if value == "":
+                return None
+            if option == "--db":
+                database = value
+            else:
+                try:
+                    people = int(value)
+                except ValueError:
+                    return None
+            index += 2
+            continue
+        return None
+    if database is None:
+        return None
+    return database, people
+
+
+def _run_seed_fake(args: Sequence[str], *, config: Config) -> int:
+    parsed = _parse_seed_fake_args(args)
+    if parsed is None:
+        print(_SEED_FAKE_USAGE, file=sys.stderr)
+        return 2
+    database_arg, people = parsed
+    try:
+        if load_production_flag(config):
+            raise RosterError("seed-fake is disabled in production")
+        database = require_outside_repository(database_arg, what="database")
+        report = seed_fake(database, people=people)
+    except RosterError as error:
+        print(f"seed-fake failed: {error}", file=sys.stderr)
+        return 2
+    except (ConfigError, OSError, sqlite3.Error):
+        print(
+            "seed-fake failed: the database could not be created",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"seeded={len(report.rows)} people={people}")
+    for role in VALID_ROLES:
+        rolls = [
+            row.roll_number
+            for row in report.rows
+            if row.role == role and row.active
+        ]
+        if rolls:
+            print(f"{role}: {', '.join(rolls)}")
+    inactive = [row.roll_number for row in report.rows if not row.active]
+    if inactive:
+        print(f"Inactive: {', '.join(inactive)}")
+    return 0
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -767,6 +1051,16 @@ def main(
         return _run_import_groups(
             args[1:], config=load_config() if config is None else config
         )
+    if args and args[0] == "roster-check":
+        return _run_roster_check(args[1:])
+    if args and args[0] == "roster-load":
+        return _run_roster_load(
+            args[1:], config=load_config() if config is None else config
+        )
+    if args and args[0] == "seed-fake":
+        return _run_seed_fake(
+            args[1:], config=load_config() if config is None else config
+        )
     if args and args[0] == "serve-api":
         return _run_serve_api(
             args[1:],
@@ -781,7 +1075,8 @@ def main(
         return _run_openapi(args[1:])
     print(
         "ASEC backend (Phase 0). Use --version, 'discord-smoke', 'run-live',"
-        " 'import-groups', 'serve-api', 'export' or 'openapi'.",
+        " 'import-groups', 'roster-check', 'roster-load', 'seed-fake',"
+        " 'serve-api', 'export' or 'openapi'.",
         file=sys.stderr,
     )
     return 2

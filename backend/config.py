@@ -81,6 +81,17 @@ def load_config(environ: Mapping[str, str] | None = None) -> Config:
     return Config(dict(source))
 
 
+#: The explicit production switch. Development-only behaviour (the console OTP
+#: sender, ``seed-fake``) refuses to run when this is true. It is configuration
+#: so a deployment states its mode instead of relying on a code branch.
+PRODUCTION_FLAG_KEY = "ASEC_PRODUCTION"
+
+
+def load_production_flag(config: Config) -> bool:
+    """Return the validated production switch (default false)."""
+    return _boolean(config, PRODUCTION_FLAG_KEY, default=False)
+
+
 #: W8a owner decision: a successful live poll authorizes the group clock only
 #: to the poll instant minus this safety margin, so closure never runs ahead of
 #: a page that has not been fetched and committed yet.

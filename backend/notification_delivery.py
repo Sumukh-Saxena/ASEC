@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -41,9 +42,11 @@ from backend.notification_events import (
     announcement_key,
     stage_notification,
 )
+from backend.roster import FAKE_DISCORD_PREFIX
 
 __all__ = [
     "AnnouncementNotFoundError",
+    "ConsoleOtpSender",
     "DeliveryBatch",
     "DevelopmentOtpSender",
     "DiscordDmOtpSender",
@@ -182,6 +185,50 @@ class DevelopmentOtpSender(RecordingOtpSender):
             f"DevelopmentOtpSender(production={self._production},"
             f" sent={len(self.sent)})"
         )
+
+
+class ConsoleOtpSender:
+    """Development-only sender: prints ``roll number -> code`` to the console.
+
+    It refuses to construct in production and refuses a roster that is not
+    obviously fake, so the flag cannot print a real person's code. The code is
+    written to the server's console only; it is never logged by the auth
+    service, stored in a response or put in a ``repr``.
+    """
+
+    def __init__(
+        self, *, production: bool, people: Iterable[tuple[str, str]]
+    ) -> None:
+        if production:
+            raise OtpSenderNotConfigured(
+                "console OTP sender is disabled in production"
+            )
+        roll_numbers: dict[str, str] = {}
+        for roll_number, discord_id in people:
+            if not discord_id.startswith(FAKE_DISCORD_PREFIX):
+                raise OtpSenderNotConfigured(
+                    "console OTP sender requires a fake roster"
+                )
+            roll_numbers[discord_id] = roll_number
+        self._roll_numbers = roll_numbers
+        self._sent: list[tuple[str, str]] = []
+
+    def send(self, *, discord_id: str, code: str) -> None:
+        roll_number = self._roll_numbers.get(discord_id)
+        if roll_number is None:
+            raise OtpSenderNotConfigured(
+                "console OTP sender only sends to the fake roster"
+            )
+        self._sent.append((roll_number, code))
+        print(f"{roll_number} -> {code}")
+
+    @property
+    def sent(self) -> tuple[tuple[str, str], ...]:
+        return tuple(self._sent)
+
+    def __repr__(self) -> str:
+        # The code and Discord id are deliberately absent.
+        return f"ConsoleOtpSender(sent={len(self._sent)})"
 
 
 def _json_object(body: bytes) -> dict[str, object] | None:
